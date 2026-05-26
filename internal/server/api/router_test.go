@@ -902,3 +902,22 @@ func TestReviewApprovalReviewerFromAuth(t *testing.T) {
 		t.Fatalf("expected reviewer_id=%s from auth, got %v", agentID, rResp["reviewer_id"])
 	}
 }
+
+func TestCreateDMMustIncludeAuthMember(t *testing.T) {
+	env := newTestEnv(t)
+	_, apiKey, wsID := env.createAgent(t)
+
+	// Create two other members
+	m1 := &proto.Member{WorkspaceID: wsID, Name: "alice", Type: proto.MemberHuman}
+	env.store.CreateMember(context.Background(), m1)
+	m2 := &proto.Member{WorkspaceID: wsID, Name: "bob", Type: proto.MemberHuman}
+	env.store.CreateMember(context.Background(), m2)
+
+	// Try to create DM without including auth'd member — should be forbidden
+	dm := map[string]any{"member_ids": []string{m1.ID, m2.ID}}
+	resp := env.doReq(t, "POST", "/v1/workspaces/"+wsID+"/dm", dm, apiKey)
+	if resp.StatusCode != 403 {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}

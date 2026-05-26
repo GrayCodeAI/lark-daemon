@@ -1610,6 +1610,11 @@ func (r *Router) handleUnpinMessage(w http.ResponseWriter, req *http.Request) {
 // --- DM handlers ---
 
 func (r *Router) handleCreateDM(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	workspaceID := chi.URLParam(req, "id")
 	var body struct {
 		MemberIDs []string `json:"member_ids"`
@@ -1617,6 +1622,18 @@ func (r *Router) handleCreateDM(w http.ResponseWriter, req *http.Request) {
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	// Ensure authenticated member is a participant.
+	isParticipant := false
+	for _, mid := range body.MemberIDs {
+		if mid == member.ID {
+			isParticipant = true
+			break
+		}
+	}
+	if !isParticipant {
+		writeError(w, http.StatusForbidden, "authenticated member must be included in member_ids")
 		return
 	}
 	if len(body.MemberIDs) < 2 {
