@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  lark:
+    build: .
+    ports:
+      - "4001:4001"
+    volumes:
+      - lark-data:/app/data
+    environment:
+      - LARK_HOST=0.0.0.0
+      - LARK_PORT=4001
+      - LARK_DB_PATH=/app/data/lark.sqlite
+      - LARK_DATA_DIR=/app/data
+      - LARK_JWT_SECRET=${LARK_JWT_SECRET:-change-me-in-production}
+      - LARK_LOG_LEVEL=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:4001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  lark-data:

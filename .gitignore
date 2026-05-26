@@ -1,0 +1,13 @@
+# Compiled binaries
+bin/
+*.exe
+lark-server
+
+# Data directory (runtime)
+data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
