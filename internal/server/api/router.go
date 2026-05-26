@@ -240,7 +240,37 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 func decodeJSON(r *http.Request, v any) error {
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(nil, r.Body, 1<<20) // 1MB limit
 	return json.NewDecoder(r.Body).Decode(v)
+}
+
+// isUUID checks that s is a valid UUID (36 chars, hex+dashes only).
+func isUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeFilename strips path separators, null bytes, and quotes from a filename.
+func sanitizeFilename(name string) string {
+	name = filepath.Base(name)
+	name = strings.ReplaceAll(name, "\"", "")
+	name = strings.ReplaceAll(name, "\n", "")
+	name = strings.ReplaceAll(name, "\r", "")
+	if name == "." || name == "/" {
+		return "unnamed"
+	}
+	return name
 }
 
 
@@ -253,6 +283,10 @@ func (r *Router) handleCreateWorkspace(w http.ResponseWriter, req *http.Request)
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
 		return
 	}
 	ws := &proto.Workspace{Name: body.Name, Slug: body.Slug}
@@ -323,6 +357,10 @@ func (r *Router) handleCreateMember(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if body.Name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
+		return
+	}
 	if proto.MemberType(body.Type) != proto.MemberHuman && proto.MemberType(body.Type) != proto.MemberAgent {
 		writeError(w, http.StatusBadRequest, "type must be 'human' or 'agent'")
 		return
@@ -384,7 +422,11 @@ func (r *Router) handleAgentProvision(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	// Check if agent already exists
-	existing, _ := r.services.GetMemberByName(req.Context(), workspaceID, body.Name)
+	existing, err2 := r.services.GetMemberByName(req.Context(), workspaceID, body.Name)
+	if err2 != nil {
+		writeError(w, http.StatusInternalServerError, err2.Error())
+		return
+	}
 	if existing != nil {
 		// Return existing agent's API key
 		writeJSON(w, http.StatusOK, map[string]string{
@@ -483,6 +525,10 @@ func (r *Router) handleCreateChannel(w http.ResponseWriter, req *http.Request) {
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Name == "" {
+		writeError(w, http.StatusBadRequest, "name required")
 		return
 	}
 	ch := &proto.Channel{
@@ -597,6 +643,10 @@ func (r *Router) handleCreateMessage(w http.ResponseWriter, req *http.Request) {
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Content == "" {
+		writeError(w, http.StatusBadRequest, "content required")
 		return
 	}
 	msg := &proto.Message{
@@ -785,6 +835,10 @@ func (r *Router) handleCreateTask(w http.ResponseWriter, req *http.Request) {
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Title == "" {
+		writeError(w, http.StatusBadRequest, "title required")
 		return
 	}
 	task := &proto.Task{
@@ -1363,20 +1417,22 @@ func (r *Router) handleGetAgentMetrics(w http.ResponseWriter, req *http.Request)
 		metrics[m.Key] = m.Value
 	}
 	// Also get task counts
-	member, _ := r.services.GetMember(req.Context(), agentID)
-	if member != nil {
-		tasks, _ := r.services.ListTasks(req.Context(), member.WorkspaceID, "")
-		var assigned, completed int
-		for _, t := range tasks {
-			if t.AssignedTo == agentID {
-				assigned++
-				if t.Status == proto.TaskDone {
-					completed++
+	member, merr := r.services.GetMember(req.Context(), agentID)
+	if merr == nil && member != nil {
+		tasks, terr := r.services.ListTasks(req.Context(), member.WorkspaceID, "")
+		if terr == nil {
+			var assigned, completed int
+			for _, t := range tasks {
+				if t.AssignedTo == agentID {
+					assigned++
+					if t.Status == proto.TaskDone {
+						completed++
+					}
 				}
 			}
+			metrics["tasks_assigned"] = assigned
+			metrics["tasks_completed"] = completed
 		}
-		metrics["tasks_assigned"] = assigned
-		metrics["tasks_completed"] = completed
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"agent_id": agentID,
@@ -1413,6 +1469,10 @@ func (r *Router) handleWSTypingStop(c *websocket.Conn, env websocket.Envelope) {
 		ChannelID string `json:"channel_id"`
 	}
 	if err := json.Unmarshal(env.Data, &data); err != nil || data.ChannelID == "" {
+		return
+	}
+	isMember, err := r.store.IsChannelMember(context.Background(), data.ChannelID, c.ID())
+	if err != nil || !isMember {
 		return
 	}
 	r.hub.BroadcastToChannel(data.ChannelID, websocket.NewEnvelope(websocket.EventTypingStop, map[string]string{
@@ -1470,6 +1530,10 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	workspaceID := chi.URLParam(req, "id")
+	if !isUUID(workspaceID) {
+		writeError(w, http.StatusBadRequest, "invalid workspace id")
+		return
+	}
 	// Parse multipart form (max 32MB)
 	if err := req.ParseMultipartForm(32 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid multipart form")
@@ -1512,7 +1576,7 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		ID:          fID,
 		WorkspaceID: workspaceID,
 		UploaderID:  member.ID,
-		Filename:    header.Filename,
+		Filename:    sanitizeFilename(header.Filename),
 		MimeType:    mimeType,
 		Size:        size,
 		Path:        savePath,
@@ -1580,7 +1644,7 @@ func (r *Router) handleDownloadFile(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(f.Filename)+"\"")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+sanitizeFilename(f.Filename)+"\"")
 	w.Header().Set("Content-Type", f.MimeType)
 	http.ServeFile(w, req, f.Path)
 }

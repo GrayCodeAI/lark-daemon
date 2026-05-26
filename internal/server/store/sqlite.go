@@ -877,9 +877,10 @@ func (s *SQLiteStore) GetDMChannel(ctx context.Context, workspaceID string, memb
 		 WHERE c.workspace_id = ? AND c.type = 'group_dm'
 		 AND cm.member_id IN (%s)
 		 GROUP BY cm.channel_id
-		 HAVING COUNT(*) = ?`,
+		 HAVING COUNT(*) = ?
+		 AND (SELECT COUNT(*) FROM channel_members cm2 WHERE cm2.channel_id = cm.channel_id) = ?`,
 		strings.Join(placeholders, ","))
-	args = append(args, nMembers)
+	args = append(args, nMembers, nMembers)
 
 	var channelID string
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(&channelID)
