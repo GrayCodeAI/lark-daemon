@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 )
@@ -24,6 +25,9 @@ func LoadConfig() *Config {
 		DataDir:   getEnv("LARK_DATA_DIR", "data"),
 		JWTSecret: getEnv("LARK_JWT_SECRET", "change-me-in-production"),
 		LogLevel:  getEnv("LARK_LOG_LEVEL", "info"),
+	}
+	if cfg.JWTSecret == "change-me-in-production" {
+		fmt.Fprintln(os.Stderr, "WARNING: LARK_JWT_SECRET is using the default value. Set it to a random secret in production.")
 	}
 	return cfg
 }

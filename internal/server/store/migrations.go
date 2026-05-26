@@ -121,7 +121,6 @@ CREATE TABLE IF NOT EXISTS agent_memory (
     namespace TEXT NOT NULL DEFAULT 'default',
     key TEXT NOT NULL,
     value TEXT NOT NULL,
-    embedding BLOB,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     UNIQUE(agent_id, namespace, key)
@@ -138,18 +137,6 @@ CREATE TABLE IF NOT EXISTS files (
     mime_type TEXT NOT NULL,
     size INTEGER NOT NULL,
     path TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-);
-
--- Webhooks
-CREATE TABLE IF NOT EXISTS webhooks (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    channel_id TEXT REFERENCES channels(id),
-    url TEXT NOT NULL,
-    secret TEXT,
-    events TEXT NOT NULL,
-    active INTEGER DEFAULT 1,
     created_at INTEGER NOT NULL
 );
 
