@@ -474,10 +474,11 @@ func TestAgentMemoryCRUD(t *testing.T) {
 
 func TestPinCRUD(t *testing.T) {
 	env := newTestEnv(t)
-	_, apiKey, wsID := env.createAgent(t)
+	agentID, apiKey, wsID := env.createAgent(t)
 
 	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
 	env.store.CreateChannel(context.Background(), ch)
+	env.store.AddChannelMember(context.Background(), ch.ID, agentID)
 	member := &proto.Member{WorkspaceID: wsID, Name: "agent1", Type: proto.MemberAgent}
 	env.store.CreateMember(context.Background(), member)
 	msg := &proto.Message{ChannelID: ch.ID, SenderID: member.ID, Content: "pin me"}
@@ -852,6 +853,7 @@ func TestPinMessagePinnedByFromAuth(t *testing.T) {
 
 	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
 	env.store.CreateChannel(context.Background(), ch)
+	env.store.AddChannelMember(context.Background(), ch.ID, agentID)
 	msg := &proto.Message{ChannelID: ch.ID, SenderID: agentID, Content: "pin me"}
 	env.store.CreateMessage(context.Background(), msg)
 

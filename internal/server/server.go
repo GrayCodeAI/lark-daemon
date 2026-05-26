@@ -100,10 +100,15 @@ func (s *Server) Run() error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	var shutdownErr error
 	if err := srv.Shutdown(ctx); err != nil {
 		s.logger.Error("shutdown error", "err", err)
+		shutdownErr = err
 	}
-	return s.Close()
+	if err := s.Close(); err != nil && shutdownErr == nil {
+		return err
+	}
+	return shutdownErr
 }
 
 // Close closes the server and its resources.
