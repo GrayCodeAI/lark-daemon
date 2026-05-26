@@ -677,17 +677,21 @@ func (r *Router) handleGetThread(w http.ResponseWriter, req *http.Request) {
 // --- Reactions ---
 
 func (r *Router) handleAddReaction(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	var body struct {
-		MemberID string `json:"member_id"`
-		Emoji    string `json:"emoji"`
+		Emoji string `json:"emoji"`
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
- reaction := &proto.Reaction{
+	reaction := &proto.Reaction{
 		MessageID: chi.URLParam(req, "id"),
-		MemberID:  body.MemberID,
+		MemberID:  member.ID,
 		Emoji:     body.Emoji,
 	}
 	if err := r.services.AddReaction(req.Context(), reaction); err != nil {
@@ -707,8 +711,12 @@ func (r *Router) handleListReactions(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleRemoveReaction(w http.ResponseWriter, req *http.Request) {
-	memberID := req.URL.Query().Get("member_id")
-	if err := r.services.RemoveReaction(req.Context(), chi.URLParam(req, "id"), memberID, chi.URLParam(req, "emoji")); err != nil {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	if err := r.services.RemoveReaction(req.Context(), chi.URLParam(req, "id"), member.ID, chi.URLParam(req, "emoji")); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -736,11 +744,15 @@ func (r *Router) handleSearch(w http.ResponseWriter, req *http.Request) {
 // --- Tasks ---
 
 func (r *Router) handleCreateTask(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	var body struct {
 		Title       string `json:"title"`
 		Description string `json:"description"`
 		AssignedTo  string `json:"assigned_to"`
-		CreatedBy   string `json:"created_by"`
 		ChannelID   string `json:"channel_id"`
 		Priority    string `json:"priority"`
 	}
@@ -753,7 +765,7 @@ func (r *Router) handleCreateTask(w http.ResponseWriter, req *http.Request) {
 		Title:       body.Title,
 		Description: body.Description,
 		AssignedTo:  body.AssignedTo,
-		CreatedBy:   body.CreatedBy,
+		CreatedBy:   member.ID,
 		ChannelID:   body.ChannelID,
 		Priority:    body.Priority,
 	}
@@ -1165,9 +1177,13 @@ func (r *Router) handleWSMessageDelete(c *websocket.Conn, env websocket.Envelope
 // --- Approval handlers ---
 
 func (r *Router) handleCreateApproval(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	workspaceID := chi.URLParam(req, "id")
 	var body struct {
-		AgentID   string `json:"agent_id"`
 		ChannelID string `json:"channel_id,omitempty"`
 		Action    string `json:"action"`
 		Payload   string `json:"payload,omitempty"`
@@ -1176,13 +1192,13 @@ func (r *Router) handleCreateApproval(w http.ResponseWriter, req *http.Request) 
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if body.AgentID == "" || body.Action == "" {
-		writeError(w, http.StatusBadRequest, "agent_id and action required")
+	if body.Action == "" {
+		writeError(w, http.StatusBadRequest, "action required")
 		return
 	}
 	a := &proto.ApprovalRequest{
 		WorkspaceID: workspaceID,
-		AgentID:     body.AgentID,
+		AgentID:     member.ID,
 		ChannelID:   body.ChannelID,
 		Action:      body.Action,
 		Payload:     body.Payload,
@@ -1220,6 +1236,11 @@ func (r *Router) handleListApprovals(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleReviewApproval(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	approvalID := chi.URLParam(req, "id")
 	existing, err := r.services.GetApproval(req.Context(), approvalID)
 	if err != nil {
@@ -1235,16 +1256,11 @@ func (r *Router) handleReviewApproval(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	var body struct {
-		Approved   bool   `json:"approved"`
-		ReviewerID string `json:"reviewer_id"`
-		Note       string `json:"note,omitempty"`
+		Approved bool   `json:"approved"`
+		Note     string `json:"note,omitempty"`
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	if body.ReviewerID == "" {
-		writeError(w, http.StatusBadRequest, "reviewer_id required")
 		return
 	}
 	if body.Approved {
@@ -1252,7 +1268,7 @@ func (r *Router) handleReviewApproval(w http.ResponseWriter, req *http.Request) 
 	} else {
 		existing.Status = proto.ApprovalDenied
 	}
-	existing.ReviewerID = body.ReviewerID
+	existing.ReviewerID = member.ID
 	existing.ReviewNote = body.Note
 	existing.ReviewedAt = time.Now().UnixMilli()
 	if err := r.services.UpdateApproval(req.Context(), existing); err != nil {
@@ -1421,6 +1437,11 @@ func (r *Router) handleWSThreadReply(c *websocket.Conn, env websocket.Envelope) 
 // --- File handlers ---
 
 func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	workspaceID := chi.URLParam(req, "id")
 	// Parse multipart form (max 32MB)
 	if err := req.ParseMultipartForm(32 << 20); err != nil {
@@ -1433,11 +1454,6 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer file.Close()
-	uploaderID := req.FormValue("uploader_id")
-	if uploaderID == "" {
-		writeError(w, http.StatusBadRequest, "uploader_id required")
-		return
-	}
 	// Create upload directory
 	uploadDir := filepath.Join("data", "files", workspaceID)
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
@@ -1468,7 +1484,7 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 	f := &proto.File{
 		ID:          fID,
 		WorkspaceID: workspaceID,
-		UploaderID:  uploaderID,
+		UploaderID:  member.ID,
 		Filename:    header.Filename,
 		MimeType:    mimeType,
 		Size:        size,
@@ -1545,23 +1561,27 @@ func (r *Router) handleDownloadFile(w http.ResponseWriter, req *http.Request) {
 // --- Pin handlers ---
 
 func (r *Router) handlePinMessage(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	channelID := chi.URLParam(req, "id")
 	var body struct {
 		MessageID string `json:"message_id"`
-		PinnedBy  string `json:"pinned_by"`
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	if body.MessageID == "" || body.PinnedBy == "" {
-		writeError(w, http.StatusBadRequest, "message_id and pinned_by required")
+	if body.MessageID == "" {
+		writeError(w, http.StatusBadRequest, "message_id required")
 		return
 	}
 	p := &proto.Pin{
 		MessageID: body.MessageID,
 		ChannelID: channelID,
-		PinnedBy:  body.PinnedBy,
+		PinnedBy:  member.ID,
 	}
 	if err := r.services.CreatePin(req.Context(), p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -1654,19 +1674,13 @@ func (r *Router) handleGetUnread(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleMarkRead(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	channelID := chi.URLParam(req, "id")
-	var body struct {
-		MemberID string `json:"member_id"`
-	}
-	if err := decodeJSON(req, &body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
-		return
-	}
-	if body.MemberID == "" {
-		writeError(w, http.StatusBadRequest, "member_id required")
-		return
-	}
-	if err := r.services.MarkChannelRead(req.Context(), channelID, body.MemberID); err != nil {
+	if err := r.services.MarkChannelRead(req.Context(), channelID, member.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

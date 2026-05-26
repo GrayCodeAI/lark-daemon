@@ -393,7 +393,7 @@ func TestReactionCRUD(t *testing.T) {
 	env.store.CreateMessage(context.Background(), msg)
 
 	// Add reaction
-	resp := env.doReq(t, "POST", "/v1/messages/"+msg.ID+"/reactions", map[string]string{"emoji": "thumbsup", "member_id": member.ID}, apiKey)
+	resp := env.doReq(t, "POST", "/v1/messages/"+msg.ID+"/reactions", map[string]string{"emoji": "thumbsup"}, apiKey)
 	checkOK(t, resp)
 	resp.Body.Close()
 
@@ -483,7 +483,7 @@ func TestPinCRUD(t *testing.T) {
 	env.store.CreateMessage(context.Background(), msg)
 
 	// Pin
-	pin := map[string]string{"message_id": msg.ID, "pinned_by": member.ID}
+	pin := map[string]string{"message_id": msg.ID}
 	resp := env.doReq(t, "POST", "/v1/channels/"+ch.ID+"/pins", pin, apiKey)
 	checkOK(t, resp)
 	resp.Body.Close()
@@ -507,9 +507,9 @@ func TestPinCRUD(t *testing.T) {
 
 func TestApprovalCRUD(t *testing.T) {
 	env := newTestEnv(t)
-	agentID, apiKey, wsID := env.createAgent(t)
+	_, apiKey, wsID := env.createAgent(t)
 
-	approval := map[string]string{"agent_id": agentID, "action": "deploy", "payload": `{"env":"prod"}`}
+	approval := map[string]string{"action": "deploy", "payload": `{"env":"prod"}`}
 	resp := env.doReq(t, "POST", "/v1/workspaces/"+wsID+"/approvals", approval, apiKey)
 	checkOK(t, resp)
 	var aResp map[string]any
@@ -779,5 +779,126 @@ func TestUpdateTaskProtectedFields(t *testing.T) {
 	}
 	if tResp["title"] != "Updated bug" {
 		t.Fatalf("title was not updated: got %v", tResp["title"])
+	}
+}
+
+// --- Additional identity spoofing tests ---
+
+func TestReactionMemberFromAuth(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
+	env.store.CreateChannel(context.Background(), ch)
+	msg := &proto.Message{ChannelID: ch.ID, SenderID: agentID, Content: "react me"}
+	env.store.CreateMessage(context.Background(), msg)
+
+	// Attempt to spoof member_id
+	resp := env.doReq(t, "POST", "/v1/messages/"+msg.ID+"/reactions", map[string]string{"emoji": "thumbsup", "member_id": "spoofed-id"}, apiKey)
+	checkOK(t, resp)
+	var rResp map[string]any
+	readJSON(t, resp, &rResp)
+	if rResp["member_id"] != agentID {
+		t.Fatalf("expected member_id=%s from auth, got %v", agentID, rResp["member_id"])
+	}
+}
+
+func TestRemoveReactionMemberFromAuth(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
+	env.store.CreateChannel(context.Background(), ch)
+	msg := &proto.Message{ChannelID: ch.ID, SenderID: agentID, Content: "react me"}
+	env.store.CreateMessage(context.Background(), msg)
+
+	// Add reaction
+	env.doReq(t, "POST", "/v1/messages/"+msg.ID+"/reactions", map[string]string{"emoji": "thumbsup"}, apiKey).Body.Close()
+
+	// Remove — should use auth member, not query param
+	resp := env.doReq(t, "DELETE", "/v1/messages/"+msg.ID+"/reactions/thumbsup?member_id=spoofed-id", nil, apiKey)
+	if resp.StatusCode != 204 {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Verify removed
+	resp = env.doReq(t, "GET", "/v1/messages/"+msg.ID+"/reactions", nil, apiKey)
+	checkOK(t, resp)
+	var reactions []map[string]any
+	readJSON(t, resp, &reactions)
+	if len(reactions) != 0 {
+		t.Fatalf("expected 0 reactions after remove, got %d", len(reactions))
+	}
+}
+
+func TestCreateTaskCreatedByFromAuth(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	task := map[string]string{"title": "Fix bug", "created_by": "spoofed-id"}
+	resp := env.doReq(t, "POST", "/v1/workspaces/"+wsID+"/tasks", task, apiKey)
+	checkOK(t, resp)
+	var taskResp map[string]any
+	readJSON(t, resp, &taskResp)
+	if taskResp["created_by"] != agentID {
+		t.Fatalf("expected created_by=%s from auth, got %v", agentID, taskResp["created_by"])
+	}
+}
+
+func TestPinMessagePinnedByFromAuth(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
+	env.store.CreateChannel(context.Background(), ch)
+	msg := &proto.Message{ChannelID: ch.ID, SenderID: agentID, Content: "pin me"}
+	env.store.CreateMessage(context.Background(), msg)
+
+	// Attempt to spoof pinned_by
+	pin := map[string]string{"message_id": msg.ID, "pinned_by": "spoofed-id"}
+	resp := env.doReq(t, "POST", "/v1/channels/"+ch.ID+"/pins", pin, apiKey)
+	checkOK(t, resp)
+	var pResp map[string]any
+	readJSON(t, resp, &pResp)
+	if pResp["pinned_by"] != agentID {
+		t.Fatalf("expected pinned_by=%s from auth, got %v", agentID, pResp["pinned_by"])
+	}
+}
+
+func TestApprovalAgentFromAuth(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	approval := map[string]string{"agent_id": "spoofed-id", "action": "deploy"}
+	resp := env.doReq(t, "POST", "/v1/workspaces/"+wsID+"/approvals", approval, apiKey)
+	checkOK(t, resp)
+	var aResp map[string]any
+	readJSON(t, resp, &aResp)
+	if aResp["agent_id"] != agentID {
+		t.Fatalf("expected agent_id=%s from auth, got %v", agentID, aResp["agent_id"])
+	}
+}
+
+func TestReviewApprovalReviewerFromAuth(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	// Create approval
+	approval := map[string]string{"action": "deploy", "payload": `{"env":"prod"}`}
+	resp := env.doReq(t, "POST", "/v1/workspaces/"+wsID+"/approvals", approval, apiKey)
+	checkOK(t, resp)
+	var aResp map[string]any
+	readJSON(t, resp, &aResp)
+	approvalID := aResp["id"].(string)
+
+	// Review with spoofed reviewer_id
+	review := map[string]any{"approved": true, "reviewer_id": "spoofed-id", "note": "looks good"}
+	resp = env.doReq(t, "PATCH", "/v1/approvals/"+approvalID, review, apiKey)
+	checkOK(t, resp)
+	var rResp map[string]any
+	readJSON(t, resp, &rResp)
+	if rResp["reviewer_id"] != agentID {
+		t.Fatalf("expected reviewer_id=%s from auth, got %v", agentID, rResp["reviewer_id"])
 	}
 }
