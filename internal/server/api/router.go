@@ -32,10 +32,11 @@ type Router struct {
 	hub        *websocket.Hub
 	auth       *websocket.AuthService
 	logger     *slog.Logger
+	corsOrigin string
 }
 
 // NewRouter creates a new API router with all routes registered.
-func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore) *Router {
+func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore, corsOrigin string) *Router {
 	r := &Router{
 		Router:     chi.NewRouter(),
 		services:   services,
@@ -44,6 +45,7 @@ func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, a
 		hub:        hub,
 		auth:       auth,
 		logger:     logger,
+		corsOrigin: corsOrigin,
 	}
 	r.setupMiddleware()
 	r.setupRoutes()
@@ -55,7 +57,7 @@ func (r *Router) setupMiddleware() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
+		AllowedOrigins:   []string{r.corsOrigin},
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
 		ExposedHeaders:   []string{"Link"},
@@ -385,6 +387,9 @@ func (r *Router) handleListMembers(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	for _, m := range members {
+		m.APIKey = ""
+	}
 	writeJSON(w, http.StatusOK, members)
 }
 
@@ -473,6 +478,7 @@ func (r *Router) handleGetMember(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "member not found")
 		return
 	}
+	member.APIKey = "" // Don't expose API key in GET responses
 	writeJSON(w, http.StatusOK, member)
 }
 
@@ -503,6 +509,7 @@ func (r *Router) handleUpdateMember(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	existing.APIKey = ""
 	writeJSON(w, http.StatusOK, existing)
 }
 

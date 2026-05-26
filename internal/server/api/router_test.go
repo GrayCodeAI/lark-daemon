@@ -40,7 +40,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	// HubAdapter for websocket.AgentStore
 	ha := &hubAdapter{store: st}
 
-	router := NewRouter(svc, st, hub, auth, logger, ha)
+	router := NewRouter(svc, st, hub, auth, logger, ha, "*")
 	ts := httptest.NewServer(router)
 	t.Cleanup(ts.Close)
 
@@ -648,7 +648,6 @@ func TestUpdateMemberProtectedFields(t *testing.T) {
 
 	member, _ := env.store.GetMember(context.Background(), agentID)
 	originalType := string(member.Type)
-	originalAPIKey := member.APIKey
 
 	// Try to overwrite ID, WorkspaceID, Type, APIKey via PATCH on the agent itself
 	patch := map[string]string{
@@ -672,8 +671,9 @@ func TestUpdateMemberProtectedFields(t *testing.T) {
 	if mResp["type"] != originalType {
 		t.Fatalf("Type was overwritten: got %v", mResp["type"])
 	}
-	if mResp["api_key"] != originalAPIKey {
-		t.Fatalf("APIKey was overwritten: got %v", mResp["api_key"])
+	// API key should be masked in responses
+	if mResp["api_key"] != nil && mResp["api_key"] != "" {
+		t.Fatalf("APIKey should be masked, got %v", mResp["api_key"])
 	}
 	if mResp["name"] != "agent-updated" {
 		t.Fatalf("name was not updated: got %v", mResp["name"])

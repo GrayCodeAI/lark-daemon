@@ -8,23 +8,25 @@ import (
 
 // Config holds server configuration.
 type Config struct {
-	Host      string
-	Port      int
-	DBPath    string
-	DataDir   string
-	JWTSecret string
-	LogLevel  string
+	Host       string
+	Port       int
+	DBPath     string
+	DataDir    string
+	JWTSecret  string
+	LogLevel   string
+	CORSOrigin string
 }
 
 // LoadConfig loads configuration from environment variables.
 func LoadConfig() *Config {
 	cfg := &Config{
-		Host:      getEnv("LARK_HOST", "0.0.0.0"),
-		Port:      getEnvInt("LARK_PORT", 4001),
-		DBPath:    getEnv("LARK_DB_PATH", "data/lark.db"),
-		DataDir:   getEnv("LARK_DATA_DIR", "data"),
-		JWTSecret: getEnv("LARK_JWT_SECRET", "change-me-in-production"),
-		LogLevel:  getEnv("LARK_LOG_LEVEL", "info"),
+		Host:       getEnv("LARK_HOST", "0.0.0.0"),
+		Port:       getEnvInt("LARK_PORT", 4001),
+		DBPath:     getEnv("LARK_DB_PATH", "data/lark.db"),
+		DataDir:    getEnv("LARK_DATA_DIR", "data"),
+		JWTSecret:  getEnv("LARK_JWT_SECRET", "change-me-in-production"),
+		LogLevel:   getEnv("LARK_LOG_LEVEL", "info"),
+		CORSOrigin: getEnv("LARK_CORS_ORIGIN", "*"),
 	}
 	if cfg.JWTSecret == "change-me-in-production" {
 		fmt.Fprintln(os.Stderr, "WARNING: LARK_JWT_SECRET is using the default value. Set it to a random secret in production.")

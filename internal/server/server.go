@@ -49,7 +49,7 @@ func New(cfg Config) (*Server, error) {
 	hubAdapter := NewHubStoreAdapter(db)
 	hub.SetStore(hubAdapter)
 	auth := websocket.NewAuthService(cfg.JWTSecret)
-	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter)
+	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin)
 
 	return &Server{
 		config:   &cfg,
