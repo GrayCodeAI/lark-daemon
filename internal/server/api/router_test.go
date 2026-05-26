@@ -588,3 +588,196 @@ func TestFileCRUD(t *testing.T) {
 		t.Fatalf("expected test.txt, got %v", fileResp["filename"])
 	}
 }
+
+// --- Sender spoofing fix ---
+
+func TestCreateMessageSenderFromAuth(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
+	env.store.CreateChannel(context.Background(), ch)
+
+	// Attempt to spoof sender_id in request body
+	msg := map[string]string{"content": "hello", "sender_id": "spoofed-id"}
+	resp := env.doReq(t, "POST", "/v1/channels/"+ch.ID+"/messages", msg, apiKey)
+	checkOK(t, resp)
+	var msgResp map[string]any
+	readJSON(t, resp, &msgResp)
+
+	// sender_id must come from auth context, not request body
+	if msgResp["sender_id"] != agentID {
+		t.Fatalf("expected sender_id=%s from auth, got %v", agentID, msgResp["sender_id"])
+	}
+}
+
+// --- Protected fields on PATCH ---
+
+func TestUpdateWorkspaceProtectedFields(t *testing.T) {
+	env := newTestEnv(t)
+	_, apiKey, wsID := env.createAgent(t)
+
+	ws, _ := env.store.GetWorkspace(context.Background(), wsID)
+	originalToken := ws.AgentProvisionToken
+
+	// Try to overwrite ID and AgentProvisionToken via PATCH
+	patch := map[string]string{
+		"name":                      "Updated",
+		"id":                        "hacked-id",
+		"agent_provision_token":     "hacked-token",
+	}
+	resp := env.doReq(t, "PATCH", "/v1/workspaces/"+wsID, patch, apiKey)
+	checkOK(t, resp)
+	var wsResp map[string]any
+	readJSON(t, resp, &wsResp)
+
+	if wsResp["id"] != wsID {
+		t.Fatalf("ID was overwritten: got %v", wsResp["id"])
+	}
+	if wsResp["agent_provision_token"] != originalToken {
+		t.Fatalf("AgentProvisionToken was overwritten: got %v", wsResp["agent_provision_token"])
+	}
+	if wsResp["name"] != "Updated" {
+		t.Fatalf("name was not updated: got %v", wsResp["name"])
+	}
+}
+
+func TestUpdateMemberProtectedFields(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	member, _ := env.store.GetMember(context.Background(), agentID)
+	originalType := string(member.Type)
+	originalAPIKey := member.APIKey
+
+	// Try to overwrite ID, WorkspaceID, Type, APIKey via PATCH on the agent itself
+	patch := map[string]string{
+		"name":         "agent-updated",
+		"id":           "hacked-id",
+		"workspace_id": "hacked-ws",
+		"type":         "human",
+		"api_key":      "hacked-key",
+	}
+	resp := env.doReq(t, "PATCH", "/v1/workspaces/"+wsID+"/members/"+agentID, patch, apiKey)
+	checkOK(t, resp)
+	var mResp map[string]any
+	readJSON(t, resp, &mResp)
+
+	if mResp["id"] != agentID {
+		t.Fatalf("ID was overwritten: got %v", mResp["id"])
+	}
+	if mResp["workspace_id"] != wsID {
+		t.Fatalf("WorkspaceID was overwritten: got %v", mResp["workspace_id"])
+	}
+	if mResp["type"] != originalType {
+		t.Fatalf("Type was overwritten: got %v", mResp["type"])
+	}
+	if mResp["api_key"] != originalAPIKey {
+		t.Fatalf("APIKey was overwritten: got %v", mResp["api_key"])
+	}
+	if mResp["name"] != "agent-updated" {
+		t.Fatalf("name was not updated: got %v", mResp["name"])
+	}
+}
+
+func TestUpdateChannelProtectedFields(t *testing.T) {
+	env := newTestEnv(t)
+	_, apiKey, wsID := env.createAgent(t)
+
+	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
+	env.store.CreateChannel(context.Background(), ch)
+
+	// Try to overwrite ID, WorkspaceID, Type
+	patch := map[string]string{
+		"name":         "general-updated",
+		"id":           "hacked-id",
+		"workspace_id": "hacked-ws",
+		"type":         "dm",
+	}
+	resp := env.doReq(t, "PATCH", "/v1/workspaces/"+wsID+"/channels/"+ch.ID, patch, apiKey)
+	checkOK(t, resp)
+	var chResp map[string]any
+	readJSON(t, resp, &chResp)
+
+	if chResp["id"] != ch.ID {
+		t.Fatalf("ID was overwritten: got %v", chResp["id"])
+	}
+	if chResp["workspace_id"] != wsID {
+		t.Fatalf("WorkspaceID was overwritten: got %v", chResp["workspace_id"])
+	}
+	if chResp["type"] != "channel" {
+		t.Fatalf("Type was overwritten: got %v", chResp["type"])
+	}
+	if chResp["name"] != "general-updated" {
+		t.Fatalf("name was not updated: got %v", chResp["name"])
+	}
+}
+
+func TestUpdateMessageProtectedFields(t *testing.T) {
+	env := newTestEnv(t)
+	agentID, apiKey, wsID := env.createAgent(t)
+
+	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
+	env.store.CreateChannel(context.Background(), ch)
+	msg := &proto.Message{ChannelID: ch.ID, SenderID: agentID, Content: "original"}
+	env.store.CreateMessage(context.Background(), msg)
+
+	// Try to overwrite ID, ChannelID, SenderID
+	patch := map[string]string{
+		"content":    "edited",
+		"id":         "hacked-id",
+		"channel_id": "hacked-channel",
+		"sender_id":  "hacked-sender",
+	}
+	resp := env.doReq(t, "PATCH", "/v1/messages/"+msg.ID, patch, apiKey)
+	checkOK(t, resp)
+	var mResp map[string]any
+	readJSON(t, resp, &mResp)
+
+	if mResp["id"] != msg.ID {
+		t.Fatalf("ID was overwritten: got %v", mResp["id"])
+	}
+	if mResp["channel_id"] != ch.ID {
+		t.Fatalf("ChannelID was overwritten: got %v", mResp["channel_id"])
+	}
+	if mResp["sender_id"] != agentID {
+		t.Fatalf("SenderID was overwritten: got %v", mResp["sender_id"])
+	}
+	if mResp["content"] != "edited" {
+		t.Fatalf("content was not updated: got %v", mResp["content"])
+	}
+}
+
+func TestUpdateTaskProtectedFields(t *testing.T) {
+	env := newTestEnv(t)
+	_, apiKey, wsID := env.createAgent(t)
+
+	task := map[string]string{"title": "Fix bug", "priority": "high"}
+	resp := env.doReq(t, "POST", "/v1/workspaces/"+wsID+"/tasks", task, apiKey)
+	checkOK(t, resp)
+	var taskResp map[string]any
+	readJSON(t, resp, &taskResp)
+	taskID := taskResp["id"].(string)
+
+	// Try to overwrite ID, WorkspaceID, CreatedBy
+	patch := map[string]string{
+		"title":       "Updated bug",
+		"id":          "hacked-id",
+		"workspace_id": "hacked-ws",
+		"created_by":  "hacked-creator",
+	}
+	resp = env.doReq(t, "PATCH", "/v1/tasks/"+taskID, patch, apiKey)
+	checkOK(t, resp)
+	var tResp map[string]any
+	readJSON(t, resp, &tResp)
+
+	if tResp["id"] != taskID {
+		t.Fatalf("ID was overwritten: got %v", tResp["id"])
+	}
+	if tResp["workspace_id"] != wsID {
+		t.Fatalf("WorkspaceID was overwritten: got %v", tResp["workspace_id"])
+	}
+	if tResp["title"] != "Updated bug" {
+		t.Fatalf("title was not updated: got %v", tResp["title"])
+	}
+}

@@ -1,11 +1,16 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
 
 	"lark/internal/server/api"
 	"lark/internal/server/service"
@@ -25,8 +30,9 @@ type Server struct {
 
 // New creates a new Server.
 func New(cfg Config) (*Server, error) {
+	level := parseLogLevel(cfg.LogLevel)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	}))
 
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0755); err != nil {
@@ -55,14 +61,57 @@ func New(cfg Config) (*Server, error) {
 	}, nil
 }
 
-// Run starts the server and blocks until it exits.
+// Run starts the server and blocks until it receives a shutdown signal.
 func (s *Server) Run() error {
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.logger.Info("starting lark server", "addr", addr)
-	return http.ListenAndServe(addr, s.router)
+
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: s.router,
+	}
+
+	// Graceful shutdown on SIGINT/SIGTERM.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	errCh := make(chan error, 1)
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case sig := <-stop:
+		s.logger.Info("shutting down", "signal", sig)
+	case err := <-errCh:
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		s.logger.Error("shutdown error", "err", err)
+	}
+	return s.Close()
 }
 
 // Close closes the server and its resources.
 func (s *Server) Close() error {
 	return s.store.Close()
+}
+
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }

@@ -121,6 +121,11 @@ type contextKey string
 
 const contextKeyMember contextKey = "member"
 
+func memberFromContext(req *http.Request) *proto.Member {
+	m, _ := req.Context().Value(contextKeyMember).(*proto.Member)
+	return m
+}
+
 
 func (r *Router) setupRoutes() {
 	// Health check
@@ -290,10 +295,15 @@ func (r *Router) handleUpdateWorkspace(w http.ResponseWriter, req *http.Request)
 		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
+	// Save protected fields before decode.
+	id := existing.ID
+	token := existing.AgentProvisionToken
 	if err := decodeJSON(req, existing); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	existing.ID = id
+	existing.AgentProvisionToken = token
 	if err := r.services.UpdateWorkspace(req.Context(), existing); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -434,10 +444,19 @@ func (r *Router) handleUpdateMember(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "member not found")
 		return
 	}
+	// Save protected fields before decode.
+	id := existing.ID
+	wsID := existing.WorkspaceID
+	mtype := existing.Type
+	apiKey := existing.APIKey
 	if err := decodeJSON(req, existing); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	existing.ID = id
+	existing.WorkspaceID = wsID
+	existing.Type = mtype
+	existing.APIKey = apiKey
 	if err := r.services.UpdateMember(req.Context(), existing); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -515,10 +534,17 @@ func (r *Router) handleUpdateChannel(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "channel not found")
 		return
 	}
+	// Save protected fields before decode.
+	id := existing.ID
+	wsID := existing.WorkspaceID
+	chType := existing.Type
 	if err := decodeJSON(req, existing); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	existing.ID = id
+	existing.WorkspaceID = wsID
+	existing.Type = chType
 	if err := r.services.UpdateChannel(req.Context(), existing); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -560,9 +586,13 @@ func (r *Router) handleRemoveChannelMember(w http.ResponseWriter, req *http.Requ
 // --- Messages ---
 
 func (r *Router) handleCreateMessage(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	var body struct {
-		SenderID string `json:"sender_id"`
-		Content  string `json:"content"`
+		Content string `json:"content"`
 		ThreadID string `json:"thread_id"`
 	}
 	if err := decodeJSON(req, &body); err != nil {
@@ -571,7 +601,7 @@ func (r *Router) handleCreateMessage(w http.ResponseWriter, req *http.Request) {
 	}
 	msg := &proto.Message{
 		ChannelID: chi.URLParam(req, "id"),
-		SenderID:  body.SenderID,
+		SenderID:  member.ID,
 		Content:   body.Content,
 		ThreadID:  body.ThreadID,
 	}
@@ -605,10 +635,19 @@ func (r *Router) handleUpdateMessage(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "message not found")
 		return
 	}
+	// Save protected fields before decode.
+	id := existing.ID
+	channelID := existing.ChannelID
+	senderID := existing.SenderID
+	createdAt := existing.CreatedAt
 	if err := decodeJSON(req, existing); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	existing.ID = id
+	existing.ChannelID = channelID
+	existing.SenderID = senderID
+	existing.CreatedAt = createdAt
 	if err := r.services.UpdateMessage(req.Context(), existing); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -748,10 +787,19 @@ func (r *Router) handleUpdateTask(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
+	// Save protected fields before decode.
+	id := existing.ID
+	wsID := existing.WorkspaceID
+	createdBy := existing.CreatedBy
+	createdAt := existing.CreatedAt
 	if err := decodeJSON(req, existing); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	existing.ID = id
+	existing.WorkspaceID = wsID
+	existing.CreatedBy = createdBy
+	existing.CreatedAt = createdAt
 	if err := r.services.UpdateTask(req.Context(), existing); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
