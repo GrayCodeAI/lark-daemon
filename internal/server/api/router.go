@@ -626,6 +626,11 @@ func (r *Router) handleListMessages(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleUpdateMessage(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	existing, err := r.services.GetMessage(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -633,6 +638,10 @@ func (r *Router) handleUpdateMessage(w http.ResponseWriter, req *http.Request) {
 	}
 	if existing == nil {
 		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if existing.SenderID != member.ID {
+		writeError(w, http.StatusForbidden, "not message author")
 		return
 	}
 	// Save protected fields before decode.
@@ -656,6 +665,24 @@ func (r *Router) handleUpdateMessage(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleDeleteMessage(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	existing, err := r.services.GetMessage(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if existing == nil {
+		writeError(w, http.StatusNotFound, "message not found")
+		return
+	}
+	if existing.SenderID != member.ID {
+		writeError(w, http.StatusForbidden, "not message author")
+		return
+	}
 	if err := r.services.DeleteMessage(req.Context(), chi.URLParam(req, "id")); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

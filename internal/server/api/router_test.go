@@ -921,3 +921,39 @@ func TestCreateDMMustIncludeAuthMember(t *testing.T) {
 	}
 	resp.Body.Close()
 }
+
+func TestUpdateMessageRequiresAuthor(t *testing.T) {
+	env := newTestEnv(t)
+	_, apiKey, wsID := env.createAgent(t)
+
+	other := &proto.Member{WorkspaceID: wsID, Name: "other", Type: proto.MemberAgent}
+	env.store.CreateMember(context.Background(), other)
+	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
+	env.store.CreateChannel(context.Background(), ch)
+	msg := &proto.Message{ChannelID: ch.ID, SenderID: other.ID, Content: "not yours"}
+	env.store.CreateMessage(context.Background(), msg)
+
+	resp := env.doReq(t, "PATCH", "/v1/messages/"+msg.ID, map[string]string{"content": "hacked"}, apiKey)
+	if resp.StatusCode != 403 {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestDeleteMessageRequiresAuthor(t *testing.T) {
+	env := newTestEnv(t)
+	_, apiKey, wsID := env.createAgent(t)
+
+	other := &proto.Member{WorkspaceID: wsID, Name: "other", Type: proto.MemberAgent}
+	env.store.CreateMember(context.Background(), other)
+	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
+	env.store.CreateChannel(context.Background(), ch)
+	msg := &proto.Message{ChannelID: ch.ID, SenderID: other.ID, Content: "not yours"}
+	env.store.CreateMessage(context.Background(), msg)
+
+	resp := env.doReq(t, "DELETE", "/v1/messages/"+msg.ID, nil, apiKey)
+	if resp.StatusCode != 403 {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
