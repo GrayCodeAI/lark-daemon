@@ -1020,6 +1020,7 @@ func (r *Router) handleWSMessageSend(c *websocket.Conn, env websocket.Envelope) 
 		SenderID:  c.ID(),
 		Content:   data.Content,
 		ThreadID:  data.ThreadID,
+		Type:      data.Type,
 	}
 	if err := r.services.CreateMessage(context.Background(), msg); err != nil {
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": err.Error()}))
@@ -1572,7 +1573,10 @@ func (r *Router) handleCreateDM(w http.ResponseWriter, req *http.Request) {
 	}
 	// Add members
 	for _, mid := range body.MemberIDs {
-		r.services.AddChannelMember(req.Context(), ch.ID, mid)
+		if err := r.services.AddChannelMember(req.Context(), ch.ID, mid); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to add member: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, ch)
 }
