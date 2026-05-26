@@ -20,18 +20,26 @@ type Config struct {
 // LoadConfig loads configuration from environment variables.
 func LoadConfig() *Config {
 	cfg := &Config{
-		Host:       getEnv("LARK_HOST", "0.0.0.0"),
+		Host:       getEnv("LARK_HOST", "127.0.0.1"),
 		Port:       getEnvInt("LARK_PORT", 4001),
 		DBPath:     getEnv("LARK_DB_PATH", "data/lark.db"),
 		DataDir:    getEnv("LARK_DATA_DIR", "data"),
-		JWTSecret:  getEnv("LARK_JWT_SECRET", "change-me-in-production"),
+		JWTSecret:  getEnv("LARK_JWT_SECRET", ""),
 		LogLevel:   getEnv("LARK_LOG_LEVEL", "info"),
-		CORSOrigin: getEnv("LARK_CORS_ORIGIN", "*"),
-	}
-	if cfg.JWTSecret == "change-me-in-production" {
-		fmt.Fprintln(os.Stderr, "WARNING: LARK_JWT_SECRET is using the default value. Set it to a random secret in production.")
+		CORSOrigin: getEnv("LARK_CORS_ORIGIN", ""),
 	}
 	return cfg
+}
+
+// Validate checks that required config values are set.
+func (c *Config) Validate() error {
+	if c.JWTSecret == "" {
+		return fmt.Errorf("LARK_JWT_SECRET is required (generate with: openssl rand -hex 32)")
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("LARK_PORT must be between 1 and 65535")
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

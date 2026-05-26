@@ -91,7 +91,8 @@ func (r *Router) authenticate(next http.Handler) http.Handler {
 		if err == nil {
 			member, err := r.store.GetMember(req.Context(), claims.MemberID)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
+				r.logger.Error("auth: get member by JWT", "err", err)
+				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			if member == nil {
@@ -106,7 +107,8 @@ func (r *Router) authenticate(next http.Handler) http.Handler {
 		// Try API key
 		member, err := r.store.GetMemberByAPIKey(req.Context(), token)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			r.logger.Error("auth: get member by API key", "err", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 		if member == nil {
@@ -305,6 +307,9 @@ func (r *Router) handleListWorkspaces(w http.ResponseWriter, req *http.Request) 
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	for _, ws := range wss {
+		ws.AgentProvisionToken = ""
+	}
 	writeJSON(w, http.StatusOK, wss)
 }
 
@@ -318,6 +323,7 @@ func (r *Router) handleGetWorkspace(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
+	ws.AgentProvisionToken = ""
 	writeJSON(w, http.StatusOK, ws)
 }
 
@@ -344,6 +350,7 @@ func (r *Router) handleUpdateWorkspace(w http.ResponseWriter, req *http.Request)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	existing.AgentProvisionToken = ""
 	writeJSON(w, http.StatusOK, existing)
 }
 
@@ -548,6 +555,10 @@ func (r *Router) handleCreateChannel(w http.ResponseWriter, req *http.Request) {
 	if ch.Type == "" {
 		ch.Type = proto.ChannelPublic
 	}
+	if ch.Type != proto.ChannelPublic && ch.Type != proto.ChannelDM && ch.Type != proto.ChannelGroupDM {
+		writeError(w, http.StatusBadRequest, "invalid channel type (must be channel, dm, or group_dm)")
+		return
+	}
 	if err := r.services.CreateChannel(req.Context(), ch); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -644,26 +655,42 @@ func (r *Router) handleCreateMessage(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
+	channelID := chi.URLParam(req, "id")
+	// Verify sender is a member of the channel.
+	isMember, err := r.store.IsChannelMember(req.Context(), channelID, member.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !isMember {
+		writeError(w, http.StatusForbidden, "not a member of this channel")
+		return
+	}
 	var body struct {
-		Content string `json:"content"`
+		Content  string `json:"content"`
 		ThreadID string `json:"thread_id"`
 	}
 	if err := decodeJSON(req, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	body.Content = strings.TrimSpace(body.Content)
 	if body.Content == "" {
 		writeError(w, http.StatusBadRequest, "content required")
 		return
 	}
+	if len(body.Content) > 10000 {
+		writeError(w, http.StatusBadRequest, "content too long (max 10000 characters)")
+		return
+	}
 	msg := &proto.Message{
-		ChannelID: chi.URLParam(req, "id"),
+		ChannelID: channelID,
 		SenderID:  member.ID,
 		Content:   body.Content,
 		ThreadID:  body.ThreadID,
 	}
 	if err := r.services.CreateMessage(req.Context(), msg); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to create message")
 		return
 	}
 	r.hub.SendNewMessage(msg.ChannelID, msg)
@@ -674,6 +701,12 @@ func (r *Router) handleCreateMessage(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleListMessages(w http.ResponseWriter, req *http.Request) {
 	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(req.URL.Query().Get("offset"))
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	msgs, err := r.services.ListMessages(req.Context(), chi.URLParam(req, "id"), limit, offset)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -860,6 +893,11 @@ func (r *Router) handleCreateTask(w http.ResponseWriter, req *http.Request) {
 	if task.Priority == "" {
 		task.Priority = proto.TaskPriorityMedium
 	}
+	if task.Priority != proto.TaskPriorityLow && task.Priority != proto.TaskPriorityMedium &&
+		task.Priority != proto.TaskPriorityHigh && task.Priority != proto.TaskPriorityUrgent {
+		writeError(w, http.StatusBadRequest, "invalid priority (must be low, medium, high, or urgent)")
+		return
+	}
 	if err := r.services.CreateTask(req.Context(), task); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -918,6 +956,16 @@ func (r *Router) handleDeleteTask(w http.ResponseWriter, req *http.Request) {
 // --- Agent Memory ---
 
 func (r *Router) handleSetMemory(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	agentID := chi.URLParam(req, "id")
+	if member.ID != agentID {
+		writeError(w, http.StatusForbidden, "cannot modify another agent's memory")
+		return
+	}
 	var body struct {
 		Namespace string `json:"namespace"`
 		Key       string `json:"key"`
@@ -927,8 +975,12 @@ func (r *Router) handleSetMemory(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if body.Key == "" {
+		writeError(w, http.StatusBadRequest, "key required")
+		return
+	}
 	mem := &proto.AgentMemory{
-		AgentID:   chi.URLParam(req, "id"),
+		AgentID:   agentID,
 		Namespace: body.Namespace,
 		Key:       body.Key,
 		Value:     body.Value,
@@ -944,6 +996,16 @@ func (r *Router) handleSetMemory(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleListMemory(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	agentID := chi.URLParam(req, "id")
+	if member.ID != agentID {
+		writeError(w, http.StatusForbidden, "cannot read another agent's memory")
+		return
+	}
 	namespace := req.URL.Query().Get("namespace")
 	if namespace == "" {
 		namespace = "default"

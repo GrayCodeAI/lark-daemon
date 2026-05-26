@@ -321,11 +321,12 @@ func TestChannelCRUD(t *testing.T) {
 
 func TestMessageCRUD(t *testing.T) {
 	env := newTestEnv(t)
-	_, apiKey, wsID := env.createAgent(t)
+	agentID, apiKey, wsID := env.createAgent(t)
 
-	// Create channel
+	// Create channel and add agent as member
 	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
 	env.store.CreateChannel(context.Background(), ch)
+	env.store.AddChannelMember(context.Background(), ch.ID, agentID)
 
 	// Create message
 	msg := map[string]string{"content": "hello world"}
@@ -597,6 +598,7 @@ func TestCreateMessageSenderFromAuth(t *testing.T) {
 
 	ch := &proto.Channel{WorkspaceID: wsID, Name: "general", Type: proto.ChannelPublic}
 	env.store.CreateChannel(context.Background(), ch)
+	env.store.AddChannelMember(context.Background(), ch.ID, agentID)
 
 	// Attempt to spoof sender_id in request body
 	msg := map[string]string{"content": "hello", "sender_id": "spoofed-id"}
@@ -617,9 +619,6 @@ func TestUpdateWorkspaceProtectedFields(t *testing.T) {
 	env := newTestEnv(t)
 	_, apiKey, wsID := env.createAgent(t)
 
-	ws, _ := env.store.GetWorkspace(context.Background(), wsID)
-	originalToken := ws.AgentProvisionToken
-
 	// Try to overwrite ID and AgentProvisionToken via PATCH
 	patch := map[string]string{
 		"name":                      "Updated",
@@ -634,8 +633,9 @@ func TestUpdateWorkspaceProtectedFields(t *testing.T) {
 	if wsResp["id"] != wsID {
 		t.Fatalf("ID was overwritten: got %v", wsResp["id"])
 	}
-	if wsResp["agent_provision_token"] != originalToken {
-		t.Fatalf("AgentProvisionToken was overwritten: got %v", wsResp["agent_provision_token"])
+	// Token should be masked in responses
+	if wsResp["agent_provision_token"] != nil && wsResp["agent_provision_token"] != "" {
+		t.Fatalf("AgentProvisionToken should be masked, got %v", wsResp["agent_provision_token"])
 	}
 	if wsResp["name"] != "Updated" {
 		t.Fatalf("name was not updated: got %v", wsResp["name"])

@@ -47,15 +47,16 @@ const (
 	TaskDone       TaskStatus = "done"
 )
 
-// Other constants.
+// Task priority.
 const (
+	TaskPriorityLow    = "low"
 	TaskPriorityMedium = "medium"
+	TaskPriorityHigh   = "high"
+	TaskPriorityUrgent = "urgent"
 
 	AgentProvisionTokenPrefix = "lpt_"
 	AgentAPIKeyPrefix         = "lr_"
 )
-
-// NewID generates a random ID. Implemented in envelope.go.
 
 // Workspace represents a workspace.
 type Workspace struct {

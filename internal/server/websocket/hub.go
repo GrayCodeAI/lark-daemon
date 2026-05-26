@@ -59,24 +59,30 @@ func (h *Hub) SetStore(s StoreQuerier) {
 func (h *Hub) Add(c *Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.connections[c.id] = c
-	if c.isAgent {
-		h.agents[c.id] = c
+	id := c.ID()
+	isAgent := c.IsAgent()
+	name := c.Name()
+	h.connections[id] = c
+	if isAgent {
+		h.agents[id] = c
 	}
-	h.presence[c.id] = "online"
-	slog.Info("connection added", "id", c.id, "name", c.name, "is_agent", c.isAgent)
+	h.presence[id] = "online"
+	slog.Info("connection added", "id", id, "name", name, "is_agent", isAgent)
 }
 
 // Remove unregisters a connection and sets presence to offline.
 func (h *Hub) Remove(c *Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	delete(h.connections, c.id)
-	if c.isAgent {
-		delete(h.agents, c.id)
+	id := c.ID()
+	name := c.Name()
+	isAgent := c.IsAgent()
+	delete(h.connections, id)
+	if isAgent {
+		delete(h.agents, id)
 	}
-	h.presence[c.id] = "offline"
-	slog.Info("connection removed", "id", c.id, "name", c.name)
+	h.presence[id] = "offline"
+	slog.Info("connection removed", "id", id, "name", name)
 }
 
 // GetPresence returns the presence status of a member.

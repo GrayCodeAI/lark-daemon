@@ -30,6 +30,10 @@ type Server struct {
 
 // New creates a new Server.
 func New(cfg Config) (*Server, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
 	level := parseLogLevel(cfg.LogLevel)
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: level,
@@ -67,8 +71,12 @@ func (s *Server) Run() error {
 	s.logger.Info("starting lark server", "addr", addr)
 
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: s.router,
+		Addr:           addr,
+		Handler:        s.router,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   60 * time.Second,
+		IdleTimeout:    120 * time.Second,
+		MaxHeaderBytes: 1 << 20, // 1MB
 	}
 
 	// Graceful shutdown on SIGINT/SIGTERM.
