@@ -1858,7 +1858,7 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 	// Create upload directory
 	uploadDir := filepath.Join("data", "files", workspaceID)
 	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create upload directory")
+		serverError(w, err, "failed to create upload directory")
 		return
 	}
 	// Write file
@@ -1867,7 +1867,7 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 	savePath := filepath.Join(uploadDir, fID+ext)
 	dst, err := os.Create(savePath)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save file")
+		serverError(w, err, "failed to create file on disk")
 		return
 	}
 	defer dst.Close()
@@ -1950,7 +1950,7 @@ func (r *Router) handleDeleteFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if removeErr := os.Remove(f.Path); removeErr != nil && !os.IsNotExist(removeErr) {
-		writeError(w, http.StatusInternalServerError, "failed to delete file from disk")
+		serverError(w, removeErr, "failed to delete file from disk")
 		return
 	}
 	if err := r.services.DeleteFile(req.Context(), fileID); err != nil {
