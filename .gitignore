@@ -11,3 +11,4 @@ data/
 .vscode/
 *.swp
 *.swo
+store.test
