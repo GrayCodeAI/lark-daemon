@@ -918,6 +918,41 @@ func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*p
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) CreateDMChannel(ctx context.Context, ch *proto.Channel, memberIDs []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if ch.ID == "" {
+		ch.ID = proto.NewID()
+	}
+	if ch.CreatedAt == 0 {
+		ch.CreatedAt = time.Now().UnixMilli()
+	}
+	ch.UpdatedAt = ch.CreatedAt
+
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO channels (id, workspace_id, name, type, is_private, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 1, ?, ?)`,
+		ch.ID, ch.WorkspaceID, ch.Name, ch.Type, ch.CreatedAt, ch.UpdatedAt)
+	if err != nil {
+		return err
+	}
+
+	for _, mid := range memberIDs {
+		_, err = tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO channel_members (channel_id, member_id) VALUES (?, ?)`,
+			ch.ID, mid)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 // --- Unread counts ---
 
 func (s *SQLiteStore) GetUnreadCounts(ctx context.Context, memberID string) (map[string]int, error) {

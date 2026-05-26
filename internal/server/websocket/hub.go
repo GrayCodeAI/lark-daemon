@@ -116,7 +116,7 @@ func (h *Hub) GetAgentByName(name string) *Conn {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for _, c := range h.agents {
-		if c.name == name {
+		if c.Name() == name {
 			return c
 		}
 	}

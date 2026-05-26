@@ -1754,16 +1754,9 @@ func (r *Router) handleCreateDM(w http.ResponseWriter, req *http.Request) {
 		Name:        body.Name,
 		Type:        chType,
 	}
-	if err := r.services.CreateChannel(req.Context(), ch); err != nil {
+	if err := r.services.CreateDMChannel(req.Context(), ch, body.MemberIDs); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	// Add members
-	for _, mid := range body.MemberIDs {
-		if err := r.services.AddChannelMember(req.Context(), ch.ID, mid); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to add member: "+err.Error())
-			return
-		}
 	}
 	writeJSON(w, http.StatusCreated, ch)
 }

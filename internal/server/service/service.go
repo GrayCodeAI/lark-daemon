@@ -236,6 +236,10 @@ func (s *Services) ListDMChannels(ctx context.Context, memberID string) ([]*prot
 	return s.store.ListDMChannels(ctx, memberID)
 }
 
+func (s *Services) CreateDMChannel(ctx context.Context, ch *proto.Channel, memberIDs []string) error {
+	return s.store.CreateDMChannel(ctx, ch, memberIDs)
+}
+
 // --- Unread ---
 
 func (s *Services) GetUnreadCounts(ctx context.Context, memberID string) (map[string]int, error) {

@@ -84,6 +84,7 @@ type Store interface {
 	// DM operations.
 	GetDMChannel(ctx context.Context, workspaceID string, memberIDs []string) (*proto.Channel, error)
 	ListDMChannels(ctx context.Context, memberID string) ([]*proto.Channel, error)
+	CreateDMChannel(ctx context.Context, ch *proto.Channel, memberIDs []string) error
 
 	// Unread counts.
 	GetUnreadCounts(ctx context.Context, memberID string) (map[string]int, error)
