@@ -108,6 +108,7 @@ func (s *Server) Run() error {
 
 // Close closes the server and its resources.
 func (s *Server) Close() error {
+	s.hub.Close()
 	return s.store.Close()
 }
 

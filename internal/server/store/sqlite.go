@@ -139,22 +139,38 @@ func (s *SQLiteStore) CreateMember(ctx context.Context, m *proto.Member) error {
 }
 
 func (s *SQLiteStore) GetMember(ctx context.Context, id string) (*proto.Member, error) {
+	return s.queryMember(ctx,
+		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		 FROM members WHERE id = ?`, id)
+}
+
+func (s *SQLiteStore) GetMemberByAPIKey(ctx context.Context, key string) (*proto.Member, error) {
+	return s.queryMember(ctx,
+		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		 FROM members WHERE api_key = ?`, key)
+}
+
+func (s *SQLiteStore) GetMemberByName(ctx context.Context, workspaceID, name string) (*proto.Member, error) {
+	return s.queryMember(ctx,
+		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		 FROM members WHERE workspace_id = ? AND name = ?`, workspaceID, name)
+}
+
+func (s *SQLiteStore) queryMember(ctx context.Context, query string, args ...any) (*proto.Member, error) {
 	m := &proto.Member{}
 	var memberType, status string
 	var apiKey sql.NullString
 	var roleCard, caps, runtime []byte
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
-		 FROM members WHERE id = ?`, id).
+	err := s.db.QueryRowContext(ctx, query, args...).
 		Scan(&m.ID, &m.WorkspaceID, &m.Name, &memberType, &m.AvatarURL, &status,
 			&apiKey, &roleCard, &caps, &runtime, &m.CreatedAt, &m.UpdatedAt)
-	m.APIKey = apiKey.String
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	m.APIKey = apiKey.String
 	m.Type = proto.MemberType(memberType)
 	m.Status = proto.Presence(status)
 	if len(roleCard) > 0 {
@@ -173,31 +189,6 @@ func (s *SQLiteStore) GetMember(ctx context.Context, id string) (*proto.Member, 
 		}
 	}
 	return m, nil
-}
-
-func (s *SQLiteStore) GetMemberByAPIKey(ctx context.Context, key string) (*proto.Member, error) {
-	var id string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM members WHERE api_key = ?`, key).Scan(&id)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return s.GetMember(ctx, id)
-}
-
-func (s *SQLiteStore) GetMemberByName(ctx context.Context, workspaceID, name string) (*proto.Member, error) {
-	var id string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id FROM members WHERE workspace_id = ? AND name = ?`, workspaceID, name).Scan(&id)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return s.GetMember(ctx, id)
 }
 
 func (s *SQLiteStore) UpdateMemberRoleCard(ctx context.Context, memberID string, roleCard *proto.RoleCard, runtime *proto.RuntimeInfo) error {

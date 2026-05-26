@@ -131,9 +131,11 @@ func (c *Conn) Close() {
 	c.mu.Unlock()
 	// The underlying conn is closed by WritePump's defer after the send channel drains.
 	// If WritePump has already exited, close here as a safety net.
-	c.writeMu.Lock()
-	c.conn.Close()
-	c.writeMu.Unlock()
+	if c.conn != nil {
+		c.writeMu.Lock()
+		c.conn.Close()
+		c.writeMu.Unlock()
+	}
 }
 
 // ReadPump reads messages from the WebSocket.

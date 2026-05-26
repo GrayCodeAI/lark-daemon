@@ -56,12 +56,17 @@ func (h *Hub) SetStore(s StoreQuerier) {
 }
 
 // Add registers a new connection and sets presence to online.
+// If a connection with the same ID already exists, the old connection is closed.
 func (h *Hub) Add(c *Conn) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	id := c.ID()
 	isAgent := c.IsAgent()
 	name := c.Name()
+	if old, ok := h.connections[id]; ok {
+		slog.Warn("replacing stale connection", "id", id, "name", name)
+		old.Close()
+	}
 	h.connections[id] = c
 	if isAgent {
 		h.agents[id] = c
@@ -249,6 +254,19 @@ func (h *Hub) AgentCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.agents)
+}
+
+// Close gracefully closes all WebSocket connections.
+func (h *Hub) Close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, c := range h.connections {
+		c.Close()
+		delete(h.connections, id)
+	}
+	clear(h.agents)
+	clear(h.presence)
+	slog.Info("hub closed, all connections dropped")
 }
 
 // ParseAgentHello parses an agent.hello event from raw JSON.

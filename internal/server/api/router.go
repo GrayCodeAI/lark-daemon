@@ -1123,7 +1123,9 @@ func (r *Router) handleWSAuthLogin(c *websocket.Conn, env websocket.Envelope) {
 	claims, err := r.auth.ValidateToken(data.Token)
 	if err != nil {
 		// Try as API key
-		member, err := r.store.GetMemberByAPIKey(context.Background(), data.Token)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		member, err := r.store.GetMemberByAPIKey(ctx, data.Token)
 		if err != nil {
 			c.Send(websocket.NewEnvelope(websocket.EventAuthFail, map[string]string{"error": "auth error"}))
 			return
@@ -1150,7 +1152,9 @@ func (r *Router) handleWSAuthLogin(c *websocket.Conn, env websocket.Envelope) {
 	}
 
 	// JWT auth
-	member, err := r.store.GetMember(context.Background(), claims.MemberID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	member, err := r.store.GetMember(ctx, claims.MemberID)
 	if err != nil {
 		c.Send(websocket.NewEnvelope(websocket.EventAuthFail, map[string]string{"error": "auth error"}))
 		return
