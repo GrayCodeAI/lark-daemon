@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -543,9 +544,27 @@ func (s *SQLiteStore) ListReactions(ctx context.Context, messageID string) ([]*p
 
 // --- Search ---
 
+// sanitizeFTS5 escapes special FTS5 characters and wraps each term in double quotes
+// to prevent FTS5 syntax errors or injection from user input.
+func sanitizeFTS5Query(query string) string {
+	// Simple approach: split on whitespace, wrap each word in double quotes, join with spaces.
+	// This turns user input like `hello world` into `"hello" "world"` which is a safe AND query.
+	words := strings.Fields(query)
+	for i, w := range words {
+		// Escape any internal double quotes
+		w = strings.ReplaceAll(w, `"`, `""`)
+		words[i] = `"` + w + `"`
+	}
+	return strings.Join(words, " ")
+}
+
 func (s *SQLiteStore) SearchMessages(ctx context.Context, query string, channelID string, limit int) ([]*proto.Message, error) {
 	if limit <= 0 {
 		limit = 20
+	}
+	query = sanitizeFTS5Query(query)
+	if query == "" {
+		return nil, nil
 	}
 	var rows *sql.Rows
 	var err error
@@ -842,9 +861,35 @@ func (s *SQLiteStore) GetDMChannel(ctx context.Context, workspaceID string, memb
 		}
 		return s.GetChannel(ctx, channelID)
 	}
-	// For group DMs, find channels that have exactly these members
-	// This is more complex - for now, return nil (group DM creation handles this)
-	return nil, nil
+	// For group DMs: find a channel with type 'group_dm' that has exactly these members
+	// and no others. We use GROUP BY + HAVING COUNT to match the exact member set.
+	placeholders := make([]string, len(memberIDs))
+	args := make([]any, 0, len(memberIDs)+2)
+	args = append(args, workspaceID)
+	for i, mid := range memberIDs {
+		placeholders[i] = "?"
+		args = append(args, mid)
+	}
+	nMembers := len(memberIDs)
+	query := fmt.Sprintf(
+		`SELECT cm.channel_id FROM channel_members cm
+		 JOIN channels c ON c.id = cm.channel_id
+		 WHERE c.workspace_id = ? AND c.type = 'group_dm'
+		 AND cm.member_id IN (%s)
+		 GROUP BY cm.channel_id
+		 HAVING COUNT(*) = ?`,
+		strings.Join(placeholders, ","))
+	args = append(args, nMembers)
+
+	var channelID string
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&channelID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.GetChannel(ctx, channelID)
 }
 
 func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*proto.Channel, error) {

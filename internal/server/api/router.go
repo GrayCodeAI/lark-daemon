@@ -313,6 +313,10 @@ func (r *Router) handleCreateMember(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	if proto.MemberType(body.Type) != proto.MemberHuman && proto.MemberType(body.Type) != proto.MemberAgent {
+		writeError(w, http.StatusBadRequest, "type must be 'human' or 'agent'")
+		return
+	}
 	m := &proto.Member{
 		WorkspaceID: chi.URLParam(req, "id"),
 		Name:        body.Name,

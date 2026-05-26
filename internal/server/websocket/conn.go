@@ -11,12 +11,13 @@ import (
 // Conn wraps a WebSocket connection with identity and channel subscriptions.
 type Conn struct {
 	conn          *ws.Conn
-	mu            sync.Mutex
-	id            string // member ID
+	mu            sync.Mutex    // protects id, name, isAgent, authenticated, channels, closed
+	writeMu       sync.Mutex    // protects writes to the underlying conn
+	id            string
 	name          string
 	isAgent       bool
 	authenticated bool
-	channels      map[string]bool // subscribed channel IDs
+	channels      map[string]bool
 	send          chan []byte
 	hub           *Hub
 	closed        bool
@@ -36,16 +37,22 @@ func NewConn(hub *Hub, conn *ws.Conn, id, name string, isAgent bool) *Conn {
 
 // ID returns the member ID.
 func (c *Conn) ID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.id
 }
 
 // Name returns the member name.
 func (c *Conn) Name() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.name
 }
 
 // IsAgent returns whether this is an agent connection.
 func (c *Conn) IsAgent() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.isAgent
 }
 
@@ -93,7 +100,7 @@ func (c *Conn) IsSubscribed(channelID string) bool {
 	return c.channels[channelID]
 }
 
-// Send sends an envelope to this connection.
+// Send enqueues an envelope for the WritePump to send.
 func (c *Conn) Send(env Envelope) {
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -112,16 +119,21 @@ func (c *Conn) Send(env Envelope) {
 	}
 }
 
-// Close closes the connection.
+// Close signals the WritePump to stop and closes the underlying connection.
 func (c *Conn) Close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.closed {
+		c.mu.Unlock()
 		return
 	}
 	c.closed = true
 	close(c.send)
+	c.mu.Unlock()
+	// The underlying conn is closed by WritePump's defer after the send channel drains.
+	// If WritePump has already exited, close here as a safety net.
+	c.writeMu.Lock()
 	c.conn.Close()
+	c.writeMu.Unlock()
 }
 
 // ReadPump reads messages from the WebSocket.
@@ -136,27 +148,34 @@ func (c *Conn) ReadPump(handler func(env Envelope)) {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
 			if ws.IsUnexpectedCloseError(err, ws.CloseGoingAway, ws.CloseNormalClosure) {
-				slog.Error("ws read error", "err", err, "conn_id", c.id)
+				slog.Error("ws read error", "err", err, "conn_id", c.ID())
 			}
 			break
 		}
 
 		var env Envelope
 		if err := json.Unmarshal(message, &env); err != nil {
-			slog.Error("unmarshal envelope", "err", err, "conn_id", c.id)
+			slog.Error("unmarshal envelope", "err", err, "conn_id", c.ID())
 			continue
 		}
 		handler(env)
 	}
 }
 
-// WritePump writes messages to the WebSocket.
+// WritePump writes messages from the send channel to the WebSocket.
 func (c *Conn) WritePump() {
-	defer c.conn.Close()
+	defer func() {
+		c.writeMu.Lock()
+		c.conn.Close()
+		c.writeMu.Unlock()
+	}()
 
 	for msg := range c.send {
-		if err := c.conn.WriteMessage(ws.TextMessage, msg); err != nil {
-			slog.Error("ws write error", "err", err, "conn_id", c.id)
+		c.writeMu.Lock()
+		err := c.conn.WriteMessage(ws.TextMessage, msg)
+		c.writeMu.Unlock()
+		if err != nil {
+			slog.Error("ws write error", "err", err, "conn_id", c.ID())
 			return
 		}
 	}

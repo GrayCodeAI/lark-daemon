@@ -283,5 +283,16 @@ func ParseMessageSend(data json.RawMessage) (*MessageSendData, error) {
 var UpgradeConn = ws.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
-	CheckOrigin:     func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // same-origin or non-browser client
+		}
+		host := r.Header.Get("Host")
+		if host == "" {
+			return false
+		}
+		// Allow if origin matches the host (same-origin)
+		return origin == "http://"+host || origin == "https://"+host
+	},
 }
