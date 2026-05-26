@@ -1387,7 +1387,10 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 	}
 	// Create upload directory
 	uploadDir := filepath.Join("data", "files", workspaceID)
-	os.MkdirAll(uploadDir, 0o755)
+	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create upload directory")
+		return
+	}
 	// Write file
 	fID := proto.NewID()
 	ext := filepath.Ext(header.Filename)
@@ -1398,7 +1401,11 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer dst.Close()
-	size, _ := io.Copy(dst, file)
+	size, err := io.Copy(dst, file)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to write file")
+		return
+	}
 	// Detect MIME type
 	buf := make([]byte, 512)
 	dst.Seek(0, 0)

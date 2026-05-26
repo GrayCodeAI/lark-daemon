@@ -93,8 +93,8 @@ func (s *SQLiteStore) ListWorkspaces(ctx context.Context) ([]*proto.Workspace, e
 func (s *SQLiteStore) UpdateWorkspace(ctx context.Context, ws *proto.Workspace) error {
 	ws.UpdatedAt = time.Now().UnixMilli()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE workspaces SET name=?, slug=?, icon_url=?, updated_at=? WHERE id=?`,
-		ws.Name, ws.Slug, ws.IconURL, ws.UpdatedAt, ws.ID)
+		`UPDATE workspaces SET name=?, slug=?, icon_url=?, agent_provision_token=?, updated_at=? WHERE id=?`,
+		ws.Name, ws.Slug, ws.IconURL, ws.AgentProvisionToken, ws.UpdatedAt, ws.ID)
 	return err
 }
 
