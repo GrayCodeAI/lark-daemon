@@ -26,26 +26,28 @@ import (
 // Router wraps chi.Router with Lark-specific handlers.
 type Router struct {
 	chi.Router
-	services   *service.Services
-	store      store.Store
-	agentStore websocket.AgentStore
-	hub        *websocket.Hub
-	auth       *websocket.AuthService
-	logger     *slog.Logger
-	corsOrigin string
+	services     *service.Services
+	store        store.Store
+	agentStore   websocket.AgentStore
+	hub          *websocket.Hub
+	auth         *websocket.AuthService
+	logger       *slog.Logger
+	corsOrigin   string
+	agentManager *websocket.AgentManager
 }
 
 // NewRouter creates a new API router with all routes registered.
 func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore, corsOrigin string) *Router {
 	r := &Router{
-		Router:     chi.NewRouter(),
-		services:   services,
-		store:      st,
-		agentStore: agentStore,
-		hub:        hub,
-		auth:       auth,
-		logger:     logger,
-		corsOrigin: corsOrigin,
+		Router:       chi.NewRouter(),
+		services:     services,
+		store:        st,
+		agentStore:   agentStore,
+		hub:          hub,
+		auth:         auth,
+		logger:       logger,
+		corsOrigin:   corsOrigin,
+		agentManager: websocket.NewAgentManager(hub, agentStore, logger),
 	}
 	r.setupMiddleware()
 	r.setupRoutes()
@@ -235,7 +237,9 @@ func (r *Router) setupRoutes() {
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("writeJSON encode failed", "err", err, "status", status)
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -640,9 +644,15 @@ func (r *Router) handleAddChannelMember(w http.ResponseWriter, req *http.Request
 }
 
 func (r *Router) handleRemoveChannelMember(w http.ResponseWriter, req *http.Request) {
-	if err := r.services.RemoveChannelMember(req.Context(), chi.URLParam(req, "channelID"), chi.URLParam(req, "memberID")); err != nil {
+	channelID := chi.URLParam(req, "channelID")
+	memberID := chi.URLParam(req, "memberID")
+	if err := r.services.RemoveChannelMember(req.Context(), channelID, memberID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// Unsubscribe from WebSocket channel if connected
+	if c := r.hub.GetConn(memberID); c != nil {
+		c.Unsubscribe(channelID)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1019,7 +1029,13 @@ func (r *Router) handleListMemory(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleDeleteMemory(w http.ResponseWriter, req *http.Request) {
-	if err := r.services.DeleteMemory(req.Context(), chi.URLParam(req, "id"), chi.URLParam(req, "namespace"), chi.URLParam(req, "key")); err != nil {
+	member := memberFromContext(req)
+	agentID := chi.URLParam(req, "id")
+	if member.ID != agentID {
+		writeError(w, http.StatusForbidden, "cannot delete another agent's memory")
+		return
+	}
+	if err := r.services.DeleteMemory(req.Context(), agentID, chi.URLParam(req, "namespace"), chi.URLParam(req, "key")); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1052,20 +1068,17 @@ func (r *Router) handleWSEvent(c *websocket.Conn, env websocket.Envelope) {
 			c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid agent hello data"}))
 			return
 		}
-		am := websocket.NewAgentManager(r.hub, r.agentStore, r.logger)
-		am.HandleAgentHello(c, data)
+		r.agentManager.HandleAgentHello(c, data)
 
 	case websocket.EventAgentSleep:
-		am := websocket.NewAgentManager(r.hub, r.agentStore, r.logger)
-		am.HandleAgentSleep(c)
+		r.agentManager.HandleAgentSleep(c)
 
 	case websocket.EventAgentThinking:
 		var td struct {
 			ChannelID string `json:"channel_id"`
 		}
 		json.Unmarshal(env.Data, &td)
-		am := websocket.NewAgentManager(r.hub, r.agentStore, r.logger)
-		am.HandleAgentThinking(c, td.ChannelID)
+		r.agentManager.HandleAgentThinking(c, td.ChannelID)
 
 	case websocket.EventChannelJoin:
 		r.handleWSChannelJoin(c, env)
@@ -1224,6 +1237,10 @@ func (r *Router) handleWSMessageSend(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid message data"}))
 		return
 	}
+	if len(data.Content) > 10000 {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content too long (max 10000 characters)"}))
+		return
+	}
 	// Verify sender is subscribed to the channel
 	if !c.IsSubscribed(data.ChannelID) {
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not subscribed to channel"}))
@@ -1268,6 +1285,10 @@ func (r *Router) handleWSMessageEdit(c *websocket.Conn, env websocket.Envelope) 
 	}
 	if err := json.Unmarshal(env.Data, &data); err != nil {
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid data"}))
+		return
+	}
+	if len(data.Content) > 10000 {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content too long (max 10000 characters)"}))
 		return
 	}
 	msg, err := r.services.GetMessage(context.Background(), data.MessageID)
@@ -1511,16 +1532,24 @@ func (r *Router) handleGetAgentMetrics(w http.ResponseWriter, req *http.Request)
 
 func (r *Router) handleWSTypingStart(c *websocket.Conn, env websocket.Envelope) {
 	if !c.IsAuthenticated() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authenticated"}))
 		return
 	}
 	var data struct {
 		ChannelID string `json:"channel_id"`
 	}
 	if err := json.Unmarshal(env.Data, &data); err != nil || data.ChannelID == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid data"}))
 		return
 	}
 	isMember, err := r.store.IsChannelMember(context.Background(), data.ChannelID, c.ID())
-	if err != nil || !isMember {
+	if err != nil {
+		r.logger.Error("typing start: check membership", "err", err)
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
+		return
+	}
+	if !isMember {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not a channel member"}))
 		return
 	}
 	r.hub.BroadcastToChannel(data.ChannelID, websocket.NewEnvelope(websocket.EventTypingStart, map[string]string{
@@ -1532,16 +1561,24 @@ func (r *Router) handleWSTypingStart(c *websocket.Conn, env websocket.Envelope) 
 
 func (r *Router) handleWSTypingStop(c *websocket.Conn, env websocket.Envelope) {
 	if !c.IsAuthenticated() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authenticated"}))
 		return
 	}
 	var data struct {
 		ChannelID string `json:"channel_id"`
 	}
 	if err := json.Unmarshal(env.Data, &data); err != nil || data.ChannelID == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid data"}))
 		return
 	}
 	isMember, err := r.store.IsChannelMember(context.Background(), data.ChannelID, c.ID())
-	if err != nil || !isMember {
+	if err != nil {
+		r.logger.Error("typing stop: check membership", "err", err)
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
+		return
+	}
+	if !isMember {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not a channel member"}))
 		return
 	}
 	r.hub.BroadcastToChannel(data.ChannelID, websocket.NewEnvelope(websocket.EventTypingStop, map[string]string{
@@ -1568,8 +1605,17 @@ func (r *Router) handleWSThreadReply(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "parent_id and content required"}))
 		return
 	}
+	if len(data.Content) > 10000 {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content too long (max 10000 characters)"}))
+		return
+	}
 	isMember, err := r.store.IsChannelMember(context.Background(), data.ChannelID, c.ID())
-	if err != nil || !isMember {
+	if err != nil {
+		r.logger.Error("thread reply: check membership", "err", err)
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
+		return
+	}
+	if !isMember {
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not a channel member"}))
 		return
 	}

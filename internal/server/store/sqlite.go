@@ -18,9 +18,15 @@ type SQLiteStore struct {
 }
 
 func NewSQLiteStore(path string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=ON")
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
@@ -108,14 +114,23 @@ func (s *SQLiteStore) CreateMember(ctx context.Context, m *proto.Member) error {
 	now := time.Now().UnixMilli()
 	m.CreatedAt = now
 	m.UpdatedAt = now
-	roleCard, _ := json.Marshal(m.RoleCard)
-	caps, _ := json.Marshal(m.Capabilities)
-	runtime, _ := json.Marshal(m.RuntimeInfo)
+	roleCard, err := json.Marshal(m.RoleCard)
+	if err != nil {
+		return fmt.Errorf("marshal role_card: %w", err)
+	}
+	caps, err := json.Marshal(m.Capabilities)
+	if err != nil {
+		return fmt.Errorf("marshal capabilities: %w", err)
+	}
+	runtime, err := json.Marshal(m.RuntimeInfo)
+	if err != nil {
+		return fmt.Errorf("marshal runtime_info: %w", err)
+	}
 	var apiKey interface{}
 	if m.APIKey != "" {
 		apiKey = m.APIKey
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO members (id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		m.ID, m.WorkspaceID, m.Name, string(m.Type), m.AvatarURL, string(m.Status),
@@ -143,13 +158,19 @@ func (s *SQLiteStore) GetMember(ctx context.Context, id string) (*proto.Member, 
 	m.Type = proto.MemberType(memberType)
 	m.Status = proto.Presence(status)
 	if len(roleCard) > 0 {
-		json.Unmarshal(roleCard, &m.RoleCard)
+		if err := json.Unmarshal(roleCard, &m.RoleCard); err != nil {
+			return nil, fmt.Errorf("unmarshal role_card: %w", err)
+		}
 	}
 	if len(caps) > 0 {
-		json.Unmarshal(caps, &m.Capabilities)
+		if err := json.Unmarshal(caps, &m.Capabilities); err != nil {
+			return nil, fmt.Errorf("unmarshal capabilities: %w", err)
+		}
 	}
 	if len(runtime) > 0 {
-		json.Unmarshal(runtime, &m.RuntimeInfo)
+		if err := json.Unmarshal(runtime, &m.RuntimeInfo); err != nil {
+			return nil, fmt.Errorf("unmarshal runtime_info: %w", err)
+		}
 	}
 	return m, nil
 }
@@ -180,9 +201,15 @@ func (s *SQLiteStore) GetMemberByName(ctx context.Context, workspaceID, name str
 }
 
 func (s *SQLiteStore) UpdateMemberRoleCard(ctx context.Context, memberID string, roleCard *proto.RoleCard, runtime *proto.RuntimeInfo) error {
-	rc, _ := json.Marshal(roleCard)
-	rt, _ := json.Marshal(runtime)
-	_, err := s.db.ExecContext(ctx,
+	rc, err := json.Marshal(roleCard)
+	if err != nil {
+		return fmt.Errorf("marshal role_card: %w", err)
+	}
+	rt, err := json.Marshal(runtime)
+	if err != nil {
+		return fmt.Errorf("marshal runtime_info: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`UPDATE members SET role_card=?, runtime_info=?, updated_at=? WHERE id=?`,
 		rc, rt, time.Now().UnixMilli(), memberID)
 	return err
@@ -214,13 +241,19 @@ func scanMembers(rows *sql.Rows) ([]*proto.Member, error) {
 		m.Type = proto.MemberType(memberType)
 		m.Status = proto.Presence(status)
 		if len(roleCard) > 0 {
-			json.Unmarshal(roleCard, &m.RoleCard)
+			if err := json.Unmarshal(roleCard, &m.RoleCard); err != nil {
+				return nil, fmt.Errorf("unmarshal role_card: %w", err)
+			}
 		}
 		if len(caps) > 0 {
-			json.Unmarshal(caps, &m.Capabilities)
+			if err := json.Unmarshal(caps, &m.Capabilities); err != nil {
+				return nil, fmt.Errorf("unmarshal capabilities: %w", err)
+			}
 		}
 		if len(runtime) > 0 {
-			json.Unmarshal(runtime, &m.RuntimeInfo)
+			if err := json.Unmarshal(runtime, &m.RuntimeInfo); err != nil {
+				return nil, fmt.Errorf("unmarshal runtime_info: %w", err)
+			}
 		}
 		out = append(out, m)
 	}
@@ -229,10 +262,19 @@ func scanMembers(rows *sql.Rows) ([]*proto.Member, error) {
 
 func (s *SQLiteStore) UpdateMember(ctx context.Context, m *proto.Member) error {
 	m.UpdatedAt = time.Now().UnixMilli()
-	roleCard, _ := json.Marshal(m.RoleCard)
-	caps, _ := json.Marshal(m.Capabilities)
-	runtime, _ := json.Marshal(m.RuntimeInfo)
-	_, err := s.db.ExecContext(ctx,
+	roleCard, err := json.Marshal(m.RoleCard)
+	if err != nil {
+		return fmt.Errorf("marshal role_card: %w", err)
+	}
+	caps, err := json.Marshal(m.Capabilities)
+	if err != nil {
+		return fmt.Errorf("marshal capabilities: %w", err)
+	}
+	runtime, err := json.Marshal(m.RuntimeInfo)
+	if err != nil {
+		return fmt.Errorf("marshal runtime_info: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx,
 		`UPDATE members SET name=?, avatar_url=?, status=?, role_card=?, capabilities=?, runtime_info=?, updated_at=?
 		 WHERE id=?`,
 		m.Name, m.AvatarURL, string(m.Status), roleCard, caps, runtime, m.UpdatedAt, m.ID)
@@ -425,7 +467,7 @@ func (s *SQLiteStore) ListMessages(ctx context.Context, channelID string, limit,
 func (s *SQLiteStore) ListMessagesBySender(ctx context.Context, senderID string) ([]*proto.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, created_at, updated_at
-		 FROM messages WHERE sender_id = ? ORDER BY created_at DESC`, senderID)
+		 FROM messages WHERE sender_id = ? ORDER BY created_at DESC LIMIT 500`, senderID)
 	if err != nil {
 		return nil, err
 	}
@@ -477,7 +519,7 @@ func (s *SQLiteStore) DeleteMessage(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *SQLiteStore) GetRecentMessages(ctx context.Context, channelID string, limit int) ([]proto.Message, error) {
+func (s *SQLiteStore) GetRecentMessages(ctx context.Context, channelID string, limit int) ([]*proto.Message, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -489,22 +531,7 @@ func (s *SQLiteStore) GetRecentMessages(ctx context.Context, channelID string, l
 		return nil, err
 	}
 	defer rows.Close()
-
-	var messages []proto.Message
-	for rows.Next() {
-		msg := proto.Message{}
-		var threadID sql.NullString
-		var metadata sql.NullString
-		if err := rows.Scan(&msg.ID, &msg.ChannelID, &msg.SenderID, &threadID, &msg.Content, &msg.Type, &metadata, &msg.CreatedAt, &msg.UpdatedAt); err != nil {
-			return nil, err
-		}
-		msg.ThreadID = threadID.String
-		if metadata.Valid {
-			msg.Metadata = json.RawMessage(metadata.String)
-		}
-		messages = append(messages, msg)
-	}
-	return messages, rows.Err()
+	return scanMessages(rows)
 }
 
 // --- Reactions ---
@@ -843,7 +870,7 @@ func (s *SQLiteStore) GetDMChannel(ctx context.Context, workspaceID string, memb
 		return nil, nil
 	}
 	// Find a DM channel that has exactly these members
-	// For 2-member DMs, use a simple query
+	// For 2-member DMs, use a simple query with exact member count check
 	if len(memberIDs) == 2 {
 		var channelID string
 		err := s.db.QueryRowContext(ctx,
@@ -851,7 +878,8 @@ func (s *SQLiteStore) GetDMChannel(ctx context.Context, workspaceID string, memb
 			 JOIN channel_members cm2 ON cm1.channel_id = cm2.channel_id
 			 JOIN channels c ON c.id = cm1.channel_id
 			 WHERE c.workspace_id = ? AND c.type = 'dm'
-			 AND cm1.member_id = ? AND cm2.member_id = ?`,
+			 AND cm1.member_id = ? AND cm2.member_id = ?
+			 AND (SELECT COUNT(*) FROM channel_members cm3 WHERE cm3.channel_id = cm1.channel_id) = 2`,
 			workspaceID, memberIDs[0], memberIDs[1]).Scan(&channelID)
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -908,11 +936,13 @@ func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*p
 	for rows.Next() {
 		ch := &proto.Channel{}
 		var topic, name sql.NullString
-		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &name, &ch.Type, &topic, &ch.IsPrivate, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		var private int
+		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &name, &ch.Type, &topic, &private, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 			return nil, err
 		}
 		ch.Name = name.String
 		ch.Topic = topic.String
+		ch.IsPrivate = private == 1
 		out = append(out, ch)
 	}
 	return out, rows.Err()
@@ -961,9 +991,10 @@ func (s *SQLiteStore) GetUnreadCounts(ctx context.Context, memberID string) (map
 		 FROM channel_members cm
 		 LEFT JOIN messages m ON m.channel_id = cm.channel_id
 		 AND m.created_at > COALESCE(cm.last_read_at, 0)
+		 AND m.sender_id != ?
 		 WHERE cm.member_id = ?
 		 GROUP BY cm.channel_id`,
-		memberID)
+		memberID, memberID)
 	if err != nil {
 		return nil, err
 	}
@@ -982,13 +1013,6 @@ func (s *SQLiteStore) GetUnreadCounts(ctx context.Context, memberID string) (map
 	return out, rows.Err()
 }
 
-func (s *SQLiteStore) MarkChannelRead(ctx context.Context, channelID, memberID string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE channel_members SET last_read_at = ? WHERE channel_id = ? AND member_id = ?`,
-		time.Now().UnixMilli(), channelID, memberID)
-	return err
-}
-
 // --- Approvals ---
 
 func (s *SQLiteStore) CreateApproval(ctx context.Context, a *proto.ApprovalRequest) error {
@@ -999,10 +1023,14 @@ func (s *SQLiteStore) CreateApproval(ctx context.Context, a *proto.ApprovalReque
 		a.CreatedAt = time.Now().UnixMilli()
 	}
 	a.Status = proto.ApprovalPending
+	var channelID interface{}
+	if a.ChannelID != "" {
+		channelID = a.ChannelID
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO approval_requests (id, workspace_id, agent_id, channel_id, action, payload, status, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		a.ID, a.WorkspaceID, a.AgentID, a.ChannelID, a.Action, a.Payload, string(a.Status), a.CreatedAt)
+		a.ID, a.WorkspaceID, a.AgentID, channelID, a.Action, a.Payload, string(a.Status), a.CreatedAt)
 	return err
 }
 

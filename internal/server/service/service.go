@@ -130,7 +130,7 @@ func (s *Services) DeleteMessage(ctx context.Context, id string) error {
 	return s.store.DeleteMessage(ctx, id)
 }
 
-func (s *Services) GetRecentMessages(ctx context.Context, channelID string, limit int) ([]proto.Message, error) {
+func (s *Services) GetRecentMessages(ctx context.Context, channelID string, limit int) ([]*proto.Message, error) {
 	return s.store.GetRecentMessages(ctx, channelID, limit)
 }
 
@@ -247,7 +247,7 @@ func (s *Services) GetUnreadCounts(ctx context.Context, memberID string) (map[st
 }
 
 func (s *Services) MarkChannelRead(ctx context.Context, channelID, memberID string) error {
-	return s.store.MarkChannelRead(ctx, channelID, memberID)
+	return s.store.UpdateLastRead(ctx, channelID, memberID)
 }
 
 // --- Approvals ---

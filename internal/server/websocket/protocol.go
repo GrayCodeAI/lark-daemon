@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,7 +19,11 @@ type Envelope struct {
 
 // NewEnvelope creates a new envelope with the given type and data.
 func NewEnvelope(eventType string, data any) Envelope {
-	b, _ := json.Marshal(data)
+	b, err := json.Marshal(data)
+	if err != nil {
+		slog.Error("marshal envelope data", "err", err, "type", eventType)
+		b = []byte("null")
+	}
 	return Envelope{
 		V:    1,
 		ID:   uuid.New().String(),

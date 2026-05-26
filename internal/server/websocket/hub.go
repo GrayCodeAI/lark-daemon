@@ -175,14 +175,7 @@ func (h *Hub) WakeAgent(agentID string, data AgentWakeData) {
 func (h *Hub) WakeAgentByName(name, channelID, reason string) {
 	c := h.GetAgentByName(name)
 	if c == nil {
-		// Agent not connected — try store lookup to log a useful warning
-		h.mu.RLock()
-		store := h.store
-		h.mu.RUnlock()
-		if store != nil {
-			// We don't know workspace ID from just the channel, so skip store lookup
-			slog.Warn("agent not connected by name", "name", name)
-		}
+		slog.Warn("agent not connected by name", "name", name)
 		return
 	}
 

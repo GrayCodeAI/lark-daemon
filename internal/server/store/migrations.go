@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS channel_members (
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
     channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-    sender_id TEXT NOT NULL REFERENCES members(id),
+    sender_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     thread_id TEXT REFERENCES messages(id),
     content TEXT NOT NULL,
     type TEXT DEFAULT 'text',
@@ -103,9 +103,9 @@ CREATE TABLE IF NOT EXISTS reactions (
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    channel_id TEXT REFERENCES channels(id),
-    assigned_to TEXT REFERENCES members(id),
-    created_by TEXT NOT NULL REFERENCES members(id),
+    channel_id TEXT REFERENCES channels(id) ON DELETE CASCADE,
+    assigned_to TEXT REFERENCES members(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     description TEXT,
     status TEXT DEFAULT 'todo' CHECK (status IN ('todo', 'in_progress', 'review', 'done')),
@@ -135,7 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_memory_lookup ON agent_memory(agent_id, nam
 CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    uploader_id TEXT NOT NULL REFERENCES members(id),
+    uploader_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
     mime_type TEXT NOT NULL,
     size INTEGER NOT NULL,
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS pins (
     id TEXT PRIMARY KEY,
     message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-    pinned_by TEXT NOT NULL REFERENCES members(id),
+    pinned_by TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     created_at INTEGER NOT NULL,
     UNIQUE(message_id)
 );
@@ -160,11 +160,11 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     agent_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
-    channel_id TEXT REFERENCES channels(id),
+    channel_id TEXT REFERENCES channels(id) ON DELETE CASCADE,
     action TEXT NOT NULL,
     payload TEXT,
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied')),
-    reviewer_id TEXT REFERENCES members(id),
+    reviewer_id TEXT REFERENCES members(id) ON DELETE CASCADE,
     review_note TEXT,
     created_at INTEGER NOT NULL,
     reviewed_at INTEGER

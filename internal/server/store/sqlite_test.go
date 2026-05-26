@@ -742,7 +742,7 @@ func TestUnreadCounts(t *testing.T) {
 	}
 
 	// Mark read
-	s.MarkChannelRead(ctx, ch.ID, alice.ID)
+	s.UpdateLastRead(ctx, ch.ID, alice.ID)
 	counts, _ = s.GetUnreadCounts(ctx, alice.ID)
 	if counts[ch.ID] != 0 {
 		t.Fatalf("expected 0 after mark read, got %d", counts[ch.ID])
@@ -851,5 +851,166 @@ func TestListMessagesDefaultLimit(t *testing.T) {
 	msgs, _ = s.ListMessages(ctx, ch.ID, 10, 50)
 	if len(msgs) != 10 {
 		t.Fatalf("expected 10 with offset, got %d", len(msgs))
+	}
+}
+
+// --- Cascade / delete tests ---
+
+func TestDeleteMemberCascade(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	ch := seedChannel(t, s, ws.ID, "general")
+	alice := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	bob := seedMember(t, s, ws.ID, "bob", proto.MemberHuman)
+	s.AddChannelMember(ctx, ch.ID, alice.ID)
+	s.AddChannelMember(ctx, ch.ID, bob.ID)
+
+	// Alice sends messages, creates tasks, uploads files, pins
+	msg1 := &proto.Message{ChannelID: ch.ID, SenderID: alice.ID, Content: "msg1"}
+	s.CreateMessage(ctx, msg1)
+	s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: alice.ID, Content: "msg2"})
+	s.CreateTask(ctx, &proto.Task{WorkspaceID: ws.ID, ChannelID: ch.ID, CreatedBy: alice.ID, Title: "task1"})
+	s.CreateFile(ctx, &proto.File{WorkspaceID: ws.ID, UploaderID: alice.ID, Filename: "file1.txt", Path: "/tmp/f1", Size: 100})
+	s.CreatePin(ctx, &proto.Pin{ChannelID: ch.ID, MessageID: msg1.ID, PinnedBy: alice.ID})
+
+	// Delete alice — must not fail with FK constraint error
+	if err := s.DeleteMember(ctx, alice.ID); err != nil {
+		t.Fatalf("DeleteMember should succeed with cascade, got: %v", err)
+	}
+
+	// Verify alice is gone
+	m, _ := s.GetMember(ctx, alice.ID)
+	if m != nil {
+		t.Fatal("deleted member should be nil")
+	}
+
+	// Verify alice's messages are gone
+	msgs, _ := s.ListMessagesBySender(ctx, alice.ID)
+	if len(msgs) != 0 {
+		t.Fatalf("expected 0 messages after cascade delete, got %d", len(msgs))
+	}
+}
+
+func TestDeleteChannelCascade(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	ch := seedChannel(t, s, ws.ID, "general")
+	alice := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	s.AddChannelMember(ctx, ch.ID, alice.ID)
+
+	s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: alice.ID, Content: "msg1"})
+	s.CreateTask(ctx, &proto.Task{WorkspaceID: ws.ID, ChannelID: ch.ID, CreatedBy: alice.ID, Title: "task1"})
+
+	// Delete channel — must not fail with FK constraint error
+	if err := s.DeleteChannel(ctx, ch.ID); err != nil {
+		t.Fatalf("DeleteChannel should succeed with cascade, got: %v", err)
+	}
+}
+
+// --- DM exact match test ---
+
+func TestDMChannelExactMatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	alice := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	bob := seedMember(t, s, ws.ID, "bob", proto.MemberHuman)
+	charlie := seedMember(t, s, ws.ID, "charlie", proto.MemberHuman)
+
+	// Create a group DM with alice, bob, charlie
+	group := &proto.Channel{WorkspaceID: ws.ID, Name: "group", Type: proto.ChannelDM, IsPrivate: true}
+	s.CreateChannel(ctx, group)
+	s.AddChannelMember(ctx, group.ID, alice.ID)
+	s.AddChannelMember(ctx, group.ID, bob.ID)
+	s.AddChannelMember(ctx, group.ID, charlie.ID)
+
+	// Create a 2-member DM: alice + bob
+	dm := &proto.Channel{WorkspaceID: ws.ID, Name: "dm", Type: proto.ChannelDM, IsPrivate: true}
+	s.CreateChannel(ctx, dm)
+	s.AddChannelMember(ctx, dm.ID, alice.ID)
+	s.AddChannelMember(ctx, dm.ID, bob.ID)
+
+	// GetDMChannel(alice, bob) should find the 2-member DM, NOT the group
+	found, err := s.GetDMChannel(ctx, ws.ID, []string{alice.ID, bob.ID})
+	if err != nil {
+		t.Fatalf("GetDMChannel error: %v", err)
+	}
+	if found == nil {
+		t.Fatal("expected DM channel, got nil")
+	}
+	if found.ID != dm.ID {
+		t.Fatalf("expected DM channel %s, got group %s", dm.ID, found.ID)
+	}
+}
+
+// --- Unread excludes own messages ---
+
+func TestUnreadExcludesOwnMessages(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	ch := seedChannel(t, s, ws.ID, "general")
+	alice := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	bob := seedMember(t, s, ws.ID, "bob", proto.MemberHuman)
+	s.AddChannelMember(ctx, ch.ID, alice.ID)
+	s.AddChannelMember(ctx, ch.ID, bob.ID)
+
+	// Alice sends messages — should NOT count as unread for alice
+	s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: alice.ID, Content: "self1"})
+	s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: alice.ID, Content: "self2"})
+
+	counts, _ := s.GetUnreadCounts(ctx, alice.ID)
+	if counts[ch.ID] != 0 {
+		t.Fatalf("own messages should not be unread, got %d", counts[ch.ID])
+	}
+
+	// Bob sends — should count for alice
+	s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: bob.ID, Content: "from bob"})
+	counts, _ = s.GetUnreadCounts(ctx, alice.ID)
+	if counts[ch.ID] != 1 {
+		t.Fatalf("expected 1 unread from bob, got %d", counts[ch.ID])
+	}
+}
+
+// --- GetRecentMessages return type ---
+
+func TestGetRecentMessagesPointerType(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	ch := seedChannel(t, s, ws.ID, "general")
+	alice := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: alice.ID, Content: "hello"})
+
+	msgs, err := s.GetRecentMessages(ctx, ch.ID, 10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages error: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Content != "hello" {
+		t.Fatalf("expected 'hello', got '%s'", msgs[0].Content)
+	}
+}
+
+// --- ListMessagesBySender limit ---
+
+func TestListMessagesBySenderLimit(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	ch := seedChannel(t, s, ws.ID, "general")
+	alice := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	for i := 0; i < 600; i++ {
+		s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: alice.ID, Content: "msg"})
+	}
+
+	msgs, _ := s.ListMessagesBySender(ctx, alice.ID)
+	if len(msgs) > 500 {
+		t.Fatalf("expected max 500, got %d", len(msgs))
 	}
 }

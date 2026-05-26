@@ -47,7 +47,7 @@ type Store interface {
 	ListMessagesBySender(ctx context.Context, senderID string) ([]*proto.Message, error)
 	UpdateMessage(ctx context.Context, m *proto.Message) error
 	DeleteMessage(ctx context.Context, id string) error
-	GetRecentMessages(ctx context.Context, channelID string, limit int) ([]proto.Message, error)
+	GetRecentMessages(ctx context.Context, channelID string, limit int) ([]*proto.Message, error)
 
 	// Reactions.
 	AddReaction(ctx context.Context, r *proto.Reaction) error
@@ -88,7 +88,6 @@ type Store interface {
 
 	// Unread counts.
 	GetUnreadCounts(ctx context.Context, memberID string) (map[string]int, error)
-	MarkChannelRead(ctx context.Context, channelID, memberID string) error
 
 	// Approval requests.
 	CreateApproval(ctx context.Context, a *proto.ApprovalRequest) error

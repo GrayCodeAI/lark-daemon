@@ -29,58 +29,41 @@ func NewAgentManager(hub *Hub, store AgentStore, logger *slog.Logger) *AgentMana
 }
 
 // HandleAgentHello processes an agent.hello event.
-// If the connection is already authenticated (via auth.login with API key),
-// it reuses the existing identity and updates role card/runtime info.
-// Otherwise it creates a new ephemeral identity.
+// The connection MUST already be authenticated (via auth.login with API key or JWT).
+// This prevents unauthenticated clients from obtaining agent identities.
 func (am *AgentManager) HandleAgentHello(c *Conn, data *AgentHelloData) {
-	if c.IsAuthenticated() {
-		// Agent already authenticated via auth.login — update role card
-		if am.store != nil {
-			roleCard := &proto.RoleCard{
-				SystemPrompt: data.RoleCard.SystemPrompt,
-				Capabilities: data.RoleCard.Capabilities,
-			}
-			runtime := &proto.RuntimeInfo{
-				Type:     data.Runtime.Type,
-				Provider: data.Runtime.Provider,
-				Model:    data.Runtime.Model,
-			}
-			if err := am.store.UpdateMemberRoleCard(c.ID(), roleCard, runtime); err != nil {
-				slog.Error("failed to update agent role card", "err", err, "agent_id", c.ID())
-			}
-		}
-
-		// Send welcome with existing ID
-		welcome := NewEnvelope(EventAgentWelcome, AgentWelcomeData{
-			AgentID: c.ID(),
-			Status:  string(proto.AgentAwake),
-		})
-		c.Send(welcome)
-
-		// Ensure presence is online
-		am.hub.SetPresence(c.ID(), string(proto.PresenceOnline))
-
-		slog.Info("agent reconnected", "name", c.Name(), "id", c.ID())
+	if !c.IsAuthenticated() {
+		c.Send(NewEnvelope(EventError, map[string]string{"error": "must authenticate before agent.hello"}))
 		return
 	}
 
-	// Not authenticated — create new ephemeral identity
-	memberID := proto.NewID()
-	c.SetIdentity(memberID, data.Name, true)
-	c.SetAuthenticated(true)
-	am.hub.Add(c)
+	// Update role card in store
+	if am.store != nil {
+		roleCard := &proto.RoleCard{
+			SystemPrompt: data.RoleCard.SystemPrompt,
+			Capabilities: data.RoleCard.Capabilities,
+		}
+		runtime := &proto.RuntimeInfo{
+			Type:     data.Runtime.Type,
+			Provider: data.Runtime.Provider,
+			Model:    data.Runtime.Model,
+		}
+		if err := am.store.UpdateMemberRoleCard(c.ID(), roleCard, runtime); err != nil {
+			slog.Error("failed to update agent role card", "err", err, "agent_id", c.ID())
+		}
+	}
 
-	// Send welcome
+	// Send welcome with existing ID
 	welcome := NewEnvelope(EventAgentWelcome, AgentWelcomeData{
-		AgentID: memberID,
+		AgentID: c.ID(),
 		Status:  string(proto.AgentAwake),
 	})
 	c.Send(welcome)
 
-	// Broadcast presence
-	am.hub.SendPresenceUpdate(memberID, string(proto.PresenceOnline))
+	// Ensure presence is online
+	am.hub.SetPresence(c.ID(), string(proto.PresenceOnline))
 
-	slog.Info("agent connected (new)", "name", data.Name, "id", memberID)
+	slog.Info("agent hello", "name", c.Name(), "id", c.ID())
 }
 
 // HandleAgentSleep processes an agent.sleep event.
