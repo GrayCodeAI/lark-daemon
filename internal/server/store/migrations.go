@@ -66,7 +66,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, created_
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
 
--- Full-text search
+-- Full-text search (external content).
+-- NOTE: content_rowid=rowid is fragile with VACUUM (which can change implicit rowids).
+-- If you VACUUM the database, rebuild the FTS index afterward:
+--   INSERT INTO messages_fts(messages_fts) VALUES('rebuild');
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
     content=messages,
@@ -106,7 +109,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     description TEXT,
     status TEXT DEFAULT 'todo' CHECK (status IN ('todo', 'in_progress', 'review', 'done')),
-    priority TEXT DEFAULT 'medium',
+    priority TEXT DEFAULT 'medium' CHECK (priority IN ('low', 'medium', 'high', 'urgent')),
     due_at INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
@@ -160,7 +163,7 @@ CREATE TABLE IF NOT EXISTS approval_requests (
     channel_id TEXT REFERENCES channels(id),
     action TEXT NOT NULL,
     payload TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied')),
     reviewer_id TEXT REFERENCES members(id),
     review_note TEXT,
     created_at INTEGER NOT NULL,
