@@ -169,6 +169,7 @@ func (r *Router) setupRoutes() {
 
 			// Reactions
 			p.Post("/messages/{id}/reactions", r.handleAddReaction)
+			p.Get("/messages/{id}/reactions", r.handleListReactions)
 			p.Delete("/messages/{id}/reactions/{emoji}", r.handleRemoveReaction)
 
 			// Search
@@ -651,6 +652,15 @@ func (r *Router) handleAddReaction(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, reaction)
+}
+
+func (r *Router) handleListReactions(w http.ResponseWriter, req *http.Request) {
+	reactions, err := r.services.ListReactions(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, reactions)
 }
 
 func (r *Router) handleRemoveReaction(w http.ResponseWriter, req *http.Request) {
