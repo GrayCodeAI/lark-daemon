@@ -56,22 +56,26 @@ func (h *Hub) SetStore(s StoreQuerier) {
 }
 
 // Add registers a new connection and sets presence to online.
-// If a connection with the same ID already exists, the old connection is closed.
+// If a connection with the same ID already exists, the old connection is closed asynchronously.
 func (h *Hub) Add(c *Conn) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	id := c.ID()
 	isAgent := c.IsAgent()
 	name := c.Name()
-	if old, ok := h.connections[id]; ok {
+	var old *Conn
+	if prev, ok := h.connections[id]; ok {
+		old = prev
 		slog.Warn("replacing stale connection", "id", id, "name", name)
-		old.Close()
 	}
 	h.connections[id] = c
 	if isAgent {
 		h.agents[id] = c
 	}
 	h.presence[id] = "online"
+	h.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
 	slog.Info("connection added", "id", id, "name", name, "is_agent", isAgent)
 }
 
@@ -135,10 +139,15 @@ func (h *Hub) GetAgentByName(name string) *Conn {
 }
 
 // BroadcastToChannel sends a message to all connections subscribed to a channel.
+// Snapshots the connection list under the lock to avoid holding it during Send.
 func (h *Hub) BroadcastToChannel(channelID string, env Envelope) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	conns := make([]*Conn, 0, len(h.connections))
 	for _, c := range h.connections {
+		conns = append(conns, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range conns {
 		if c.IsSubscribed(channelID) {
 			c.Send(env)
 		}
@@ -148,8 +157,12 @@ func (h *Hub) BroadcastToChannel(channelID string, env Envelope) {
 // BroadcastToAll sends a message to all connections.
 func (h *Hub) BroadcastToAll(env Envelope) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	conns := make([]*Conn, 0, len(h.connections))
 	for _, c := range h.connections {
+		conns = append(conns, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range conns {
 		c.Send(env)
 	}
 }
@@ -157,8 +170,12 @@ func (h *Hub) BroadcastToAll(env Envelope) {
 // BroadcastToAgents sends a message to all agent connections.
 func (h *Hub) BroadcastToAgents(env Envelope) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	conns := make([]*Conn, 0, len(h.agents))
 	for _, c := range h.agents {
+		conns = append(conns, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range conns {
 		c.Send(env)
 	}
 }
@@ -213,7 +230,7 @@ func (h *Hub) WakeAgentByName(name, channelID, reason string) {
 	}
 	env := NewEnvelope(EventAgentWake, data)
 	c.Send(env)
-	slog.Info("agent woken by name", "name", name, "agent_id", c.id, "reason", reason)
+	slog.Info("agent woken by name", "name", name, "agent_id", c.ID(), "reason", reason)
 }
 
 // SendTypingIndicator broadcasts a typing indicator to a channel.
@@ -257,16 +274,21 @@ func (h *Hub) AgentCount() int {
 }
 
 // Close gracefully closes all WebSocket connections.
+// Snapshots and clears the maps under lock, then closes connections outside the lock.
 func (h *Hub) Close() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	for id, c := range h.connections {
-		c.Close()
-		delete(h.connections, id)
+	conns := make([]*Conn, 0, len(h.connections))
+	for _, c := range h.connections {
+		conns = append(conns, c)
 	}
-	clear(h.agents)
-	clear(h.presence)
-	slog.Info("hub closed, all connections dropped")
+	h.connections = make(map[string]*Conn)
+	h.agents = make(map[string]*Conn)
+	h.presence = make(map[string]string)
+	h.mu.Unlock()
+	for _, c := range conns {
+		c.Close()
+	}
+	slog.Info("hub closed, all connections dropped", "count", len(conns))
 }
 
 // ParseAgentHello parses an agent.hello event from raw JSON.

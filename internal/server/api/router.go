@@ -246,6 +246,18 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
+// serverError logs the real error and sends a generic message to the client.
+func serverError(w http.ResponseWriter, err error, logMsg string, logArgs ...any) {
+	slog.Error(logMsg, append([]any{"err", err}, logArgs...)...)
+	writeError(w, http.StatusInternalServerError, "internal error")
+}
+
+// wsError logs the real error and sends a generic error envelope over WS.
+func wsError(c *websocket.Conn, err error, logMsg string, logArgs ...any) {
+	slog.Error(logMsg, append([]any{"err", err}, logArgs...)...)
+	c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
+}
+
 func decodeJSON(r *http.Request, v any) error {
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(nil, r.Body, 1<<20) // 1MB limit
@@ -299,7 +311,7 @@ func (r *Router) handleCreateWorkspace(w http.ResponseWriter, req *http.Request)
 	}
 	ws := &proto.Workspace{Name: body.Name, Slug: body.Slug}
 	if err := r.services.CreateWorkspace(req.Context(), ws); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, ws)
@@ -308,7 +320,7 @@ func (r *Router) handleCreateWorkspace(w http.ResponseWriter, req *http.Request)
 func (r *Router) handleListWorkspaces(w http.ResponseWriter, req *http.Request) {
 	wss, err := r.services.ListWorkspaces(req.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	for _, ws := range wss {
@@ -320,7 +332,7 @@ func (r *Router) handleListWorkspaces(w http.ResponseWriter, req *http.Request) 
 func (r *Router) handleGetWorkspace(w http.ResponseWriter, req *http.Request) {
 	ws, err := r.services.GetWorkspace(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	if ws == nil {
@@ -334,7 +346,7 @@ func (r *Router) handleGetWorkspace(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleUpdateWorkspace(w http.ResponseWriter, req *http.Request) {
 	existing, err := r.services.GetWorkspace(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	if existing == nil {
@@ -351,7 +363,7 @@ func (r *Router) handleUpdateWorkspace(w http.ResponseWriter, req *http.Request)
 	existing.ID = id
 	existing.AgentProvisionToken = token
 	if err := r.services.UpdateWorkspace(req.Context(), existing); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	existing.AgentProvisionToken = ""
@@ -386,7 +398,7 @@ func (r *Router) handleCreateMember(w http.ResponseWriter, req *http.Request) {
 		Status:      proto.PresenceOffline,
 	}
 	if err := r.services.CreateMember(req.Context(), m); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, m)
@@ -395,7 +407,7 @@ func (r *Router) handleCreateMember(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleListMembers(w http.ResponseWriter, req *http.Request) {
 	members, err := r.services.ListMembers(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	for _, m := range members {
@@ -426,7 +438,7 @@ func (r *Router) handleAgentProvision(w http.ResponseWriter, req *http.Request) 
 	// Validate provision token
 	ws, err := r.services.GetWorkspace(req.Context(), workspaceID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	if ws == nil {
@@ -440,7 +452,7 @@ func (r *Router) handleAgentProvision(w http.ResponseWriter, req *http.Request) 
 	// Check if agent already exists
 	existing, err2 := r.services.GetMemberByName(req.Context(), workspaceID, body.Name)
 	if err2 != nil {
-		writeError(w, http.StatusInternalServerError, err2.Error())
+		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
 	if existing != nil {
@@ -469,7 +481,7 @@ func (r *Router) handleAgentProvision(w http.ResponseWriter, req *http.Request) 
 		},
 	}
 	if err := r.services.CreateMember(req.Context(), m); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{
@@ -480,12 +492,17 @@ func (r *Router) handleAgentProvision(w http.ResponseWriter, req *http.Request) 
 }
 
 func (r *Router) handleGetMember(w http.ResponseWriter, req *http.Request) {
-	member, err := r.services.GetMember(req.Context(), chi.URLParam(req, "memberID"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	caller := memberFromContext(req)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if member == nil {
+	member, err := r.services.GetMember(req.Context(), chi.URLParam(req, "memberID"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if member == nil || member.WorkspaceID != caller.WorkspaceID {
 		writeError(w, http.StatusNotFound, "member not found")
 		return
 	}
@@ -496,7 +513,7 @@ func (r *Router) handleGetMember(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleUpdateMember(w http.ResponseWriter, req *http.Request) {
 	existing, err := r.services.GetMember(req.Context(), chi.URLParam(req, "memberID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	if existing == nil {
@@ -517,7 +534,7 @@ func (r *Router) handleUpdateMember(w http.ResponseWriter, req *http.Request) {
 	existing.Type = mtype
 	existing.APIKey = apiKey
 	if err := r.services.UpdateMember(req.Context(), existing); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	existing.APIKey = ""
@@ -525,8 +542,23 @@ func (r *Router) handleUpdateMember(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleDeleteMember(w http.ResponseWriter, req *http.Request) {
-	if err := r.services.DeleteMember(req.Context(), chi.URLParam(req, "memberID")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	targetID := chi.URLParam(req, "memberID")
+	target, err := r.services.GetMember(req.Context(), targetID)
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if target == nil || target.WorkspaceID != member.WorkspaceID {
+		writeError(w, http.StatusNotFound, "member not found")
+		return
+	}
+	if err := r.services.DeleteMember(req.Context(), targetID); err != nil {
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -564,7 +596,7 @@ func (r *Router) handleCreateChannel(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := r.services.CreateChannel(req.Context(), ch); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, ch)
@@ -573,19 +605,24 @@ func (r *Router) handleCreateChannel(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleListChannels(w http.ResponseWriter, req *http.Request) {
 	channels, err := r.services.ListChannels(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, channels)
 }
 
 func (r *Router) handleGetChannel(w http.ResponseWriter, req *http.Request) {
-	ch, err := r.services.GetChannel(req.Context(), chi.URLParam(req, "channelID"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	caller := memberFromContext(req)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if ch == nil {
+	ch, err := r.services.GetChannel(req.Context(), chi.URLParam(req, "channelID"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if ch == nil || ch.WorkspaceID != caller.WorkspaceID {
 		writeError(w, http.StatusNotFound, "channel not found")
 		return
 	}
@@ -595,7 +632,7 @@ func (r *Router) handleGetChannel(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleUpdateChannel(w http.ResponseWriter, req *http.Request) {
 	existing, err := r.services.GetChannel(req.Context(), chi.URLParam(req, "channelID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	if existing == nil {
@@ -614,15 +651,30 @@ func (r *Router) handleUpdateChannel(w http.ResponseWriter, req *http.Request) {
 	existing.WorkspaceID = wsID
 	existing.Type = chType
 	if err := r.services.UpdateChannel(req.Context(), existing); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, existing)
 }
 
 func (r *Router) handleDeleteChannel(w http.ResponseWriter, req *http.Request) {
-	if err := r.services.DeleteChannel(req.Context(), chi.URLParam(req, "channelID")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	channelID := chi.URLParam(req, "channelID")
+	ch, err := r.services.GetChannel(req.Context(), channelID)
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if ch == nil || ch.WorkspaceID != member.WorkspaceID {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	if err := r.services.DeleteChannel(req.Context(), channelID); err != nil {
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -637,7 +689,7 @@ func (r *Router) handleAddChannelMember(w http.ResponseWriter, req *http.Request
 		return
 	}
 	if err := r.services.AddChannelMember(req.Context(), chi.URLParam(req, "channelID"), body.MemberID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -647,7 +699,7 @@ func (r *Router) handleRemoveChannelMember(w http.ResponseWriter, req *http.Requ
 	channelID := chi.URLParam(req, "channelID")
 	memberID := chi.URLParam(req, "memberID")
 	if err := r.services.RemoveChannelMember(req.Context(), channelID, memberID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	// Unsubscribe from WebSocket channel if connected
@@ -709,6 +761,21 @@ func (r *Router) handleCreateMessage(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleListMessages(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	channelID := chi.URLParam(req, "id")
+	isMember, err := r.store.IsChannelMember(req.Context(), channelID, member.ID)
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if !isMember {
+		writeError(w, http.StatusForbidden, "not a member of this channel")
+		return
+	}
 	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(req.URL.Query().Get("offset"))
 	if limit <= 0 || limit > 200 {
@@ -717,9 +784,9 @@ func (r *Router) handleListMessages(w http.ResponseWriter, req *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	msgs, err := r.services.ListMessages(req.Context(), chi.URLParam(req, "id"), limit, offset)
+	msgs, err := r.services.ListMessages(req.Context(), channelID, limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, msgs)
@@ -733,7 +800,7 @@ func (r *Router) handleUpdateMessage(w http.ResponseWriter, req *http.Request) {
 	}
 	existing, err := r.services.GetMessage(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	if existing == nil {
@@ -758,7 +825,7 @@ func (r *Router) handleUpdateMessage(w http.ResponseWriter, req *http.Request) {
 	existing.SenderID = senderID
 	existing.CreatedAt = createdAt
 	if err := r.services.UpdateMessage(req.Context(), existing); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, existing)
@@ -772,7 +839,7 @@ func (r *Router) handleDeleteMessage(w http.ResponseWriter, req *http.Request) {
 	}
 	existing, err := r.services.GetMessage(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	if existing == nil {
@@ -784,7 +851,7 @@ func (r *Router) handleDeleteMessage(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := r.services.DeleteMessage(req.Context(), chi.URLParam(req, "id")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -793,9 +860,34 @@ func (r *Router) handleDeleteMessage(w http.ResponseWriter, req *http.Request) {
 // --- Threads ---
 
 func (r *Router) handleGetThread(w http.ResponseWriter, req *http.Request) {
-	msgs, err := r.services.ListThreadMessages(req.Context(), chi.URLParam(req, "id"))
+	caller := memberFromContext(req)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	threadID := chi.URLParam(req, "id")
+	// Verify the parent message exists and caller is a member of its channel
+	parent, err := r.services.GetMessage(req.Context(), threadID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
+		return
+	}
+	if parent == nil {
+		writeError(w, http.StatusNotFound, "thread not found")
+		return
+	}
+	isMember, err := r.store.IsChannelMember(req.Context(), parent.ChannelID, caller.ID)
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if !isMember {
+		writeError(w, http.StatusForbidden, "not a member of this channel")
+		return
+	}
+	msgs, err := r.services.ListThreadMessages(req.Context(), threadID)
+	if err != nil {
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, msgs)
@@ -822,16 +914,20 @@ func (r *Router) handleAddReaction(w http.ResponseWriter, req *http.Request) {
 		Emoji:     body.Emoji,
 	}
 	if err := r.services.AddReaction(req.Context(), reaction); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, reaction)
 }
 
 func (r *Router) handleListReactions(w http.ResponseWriter, req *http.Request) {
+	if memberFromContext(req) == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	reactions, err := r.services.ListReactions(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, reactions)
@@ -844,7 +940,7 @@ func (r *Router) handleRemoveReaction(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	if err := r.services.RemoveReaction(req.Context(), chi.URLParam(req, "id"), member.ID, chi.URLParam(req, "emoji")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -860,9 +956,12 @@ func (r *Router) handleSearch(w http.ResponseWriter, req *http.Request) {
 	}
 	channelID := req.URL.Query().Get("channel")
 	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
 	msgs, err := r.services.SearchMessages(req.Context(), q, channelID, limit)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, msgs)
@@ -909,7 +1008,7 @@ func (r *Router) handleCreateTask(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := r.services.CreateTask(req.Context(), task); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, task)
@@ -919,19 +1018,24 @@ func (r *Router) handleListTasks(w http.ResponseWriter, req *http.Request) {
 	status := proto.TaskStatus(req.URL.Query().Get("status"))
 	tasks, err := r.services.ListTasks(req.Context(), chi.URLParam(req, "id"), status)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, tasks)
 }
 
 func (r *Router) handleUpdateTask(w http.ResponseWriter, req *http.Request) {
-	existing, err := r.services.GetTask(req.Context(), chi.URLParam(req, "id"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if existing == nil {
+	existing, err := r.services.GetTask(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if existing == nil || existing.WorkspaceID != member.WorkspaceID {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
@@ -949,15 +1053,29 @@ func (r *Router) handleUpdateTask(w http.ResponseWriter, req *http.Request) {
 	existing.CreatedBy = createdBy
 	existing.CreatedAt = createdAt
 	if err := r.services.UpdateTask(req.Context(), existing); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, existing)
 }
 
 func (r *Router) handleDeleteTask(w http.ResponseWriter, req *http.Request) {
-	if err := r.services.DeleteTask(req.Context(), chi.URLParam(req, "id")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	task, err := r.services.GetTask(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if task == nil || task.WorkspaceID != member.WorkspaceID {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if err := r.services.DeleteTask(req.Context(), task.ID); err != nil {
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -999,7 +1117,7 @@ func (r *Router) handleSetMemory(w http.ResponseWriter, req *http.Request) {
 		mem.Namespace = "default"
 	}
 	if err := r.services.SetMemory(req.Context(), mem); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, mem)
@@ -1022,7 +1140,7 @@ func (r *Router) handleListMemory(w http.ResponseWriter, req *http.Request) {
 	}
 	memories, err := r.services.ListMemory(req.Context(), chi.URLParam(req, "id"), namespace)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, memories)
@@ -1030,13 +1148,17 @@ func (r *Router) handleListMemory(w http.ResponseWriter, req *http.Request) {
 
 func (r *Router) handleDeleteMemory(w http.ResponseWriter, req *http.Request) {
 	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	agentID := chi.URLParam(req, "id")
 	if member.ID != agentID {
 		writeError(w, http.StatusForbidden, "cannot delete another agent's memory")
 		return
 	}
 	if err := r.services.DeleteMemory(req.Context(), agentID, chi.URLParam(req, "namespace"), chi.URLParam(req, "key")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -1055,6 +1177,14 @@ func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request) {
 	go wc.ReadPump(func(env websocket.Envelope) {
 		r.handleWSEvent(wc, env)
 	})
+	// Close unauthenticated connections after 30 seconds
+	go func() {
+		time.Sleep(30 * time.Second)
+		if !wc.IsAuthenticated() {
+			wc.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "auth timeout"}))
+			wc.Close()
+		}
+	}()
 }
 
 func (r *Router) handleWSEvent(c *websocket.Conn, env websocket.Envelope) {
@@ -1074,10 +1204,17 @@ func (r *Router) handleWSEvent(c *websocket.Conn, env websocket.Envelope) {
 		r.agentManager.HandleAgentSleep(c)
 
 	case websocket.EventAgentThinking:
+		if !c.IsAuthenticated() || !c.IsAgent() {
+			c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+			return
+		}
 		var td struct {
 			ChannelID string `json:"channel_id"`
 		}
-		json.Unmarshal(env.Data, &td)
+		if err := json.Unmarshal(env.Data, &td); err != nil || td.ChannelID == "" {
+			c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid thinking data"}))
+			return
+		}
 		r.agentManager.HandleAgentThinking(c, td.ChannelID)
 
 	case websocket.EventChannelJoin:
@@ -1139,7 +1276,7 @@ func (r *Router) handleWSAuthLogin(c *websocket.Conn, env websocket.Envelope) {
 		r.hub.Add(c)
 
 		// Auto-subscribe to all channels the member belongs to
-		r.subscribeMemberChannels(c, member.ID, member.WorkspaceID)
+		r.subscribeMemberChannels(c, member.ID)
 
 		c.Send(websocket.NewEnvelope(websocket.EventAuthSuccess, map[string]any{
 			"member_id":    member.ID,
@@ -1168,7 +1305,7 @@ func (r *Router) handleWSAuthLogin(c *websocket.Conn, env websocket.Envelope) {
 	r.hub.Add(c)
 
 	// Auto-subscribe to all channels the member belongs to
-	r.subscribeMemberChannels(c, member.ID, member.WorkspaceID)
+	r.subscribeMemberChannels(c, member.ID)
 
 	c.Send(websocket.NewEnvelope(websocket.EventAuthSuccess, map[string]any{
 		"member_id":    member.ID,
@@ -1179,17 +1316,13 @@ func (r *Router) handleWSAuthLogin(c *websocket.Conn, env websocket.Envelope) {
 	r.hub.SendPresenceUpdate(member.ID, string(proto.PresenceOnline))
 }
 
-func (r *Router) subscribeMemberChannels(c *websocket.Conn, memberID, workspaceID string) {
-	channels, err := r.store.ListChannels(context.Background(), workspaceID)
+func (r *Router) subscribeMemberChannels(c *websocket.Conn, memberID string) {
+	channelIDs, err := r.store.ListMemberChannelIDs(context.Background(), memberID)
 	if err != nil {
 		return
 	}
-	for _, ch := range channels {
-		isMember, err := r.store.IsChannelMember(context.Background(), ch.ID, memberID)
-		if err != nil || !isMember {
-			continue
-		}
-		c.Subscribe(ch.ID)
+	for _, id := range channelIDs {
+		_ = c.Subscribe(id) // best-effort during auto-subscribe
 	}
 }
 
@@ -1211,7 +1344,10 @@ func (r *Router) handleWSChannelJoin(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not a channel member"}))
 		return
 	}
-	c.Subscribe(data.ChannelID)
+	if !c.Subscribe(data.ChannelID) {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "subscription limit reached"}))
+		return
+	}
 	c.Send(websocket.NewEnvelope(websocket.EventChannelJoin, map[string]string{"channel_id": data.ChannelID}))
 }
 
@@ -1241,6 +1377,10 @@ func (r *Router) handleWSMessageSend(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid message data"}))
 		return
 	}
+	if strings.TrimSpace(data.Content) == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content is required"}))
+		return
+	}
 	if len(data.Content) > 10000 {
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content too long (max 10000 characters)"}))
 		return
@@ -1258,7 +1398,7 @@ func (r *Router) handleWSMessageSend(c *websocket.Conn, env websocket.Envelope) 
 		Type:      data.Type,
 	}
 	if err := r.services.CreateMessage(context.Background(), msg); err != nil {
-		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": err.Error()}))
+		wsError(c, err, "ws create message failed")
 		return
 	}
 	r.hub.SendNewMessage(msg.ChannelID, msg)
@@ -1291,6 +1431,10 @@ func (r *Router) handleWSMessageEdit(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid data"}))
 		return
 	}
+	if strings.TrimSpace(data.Content) == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content is required"}))
+		return
+	}
 	if len(data.Content) > 10000 {
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content too long (max 10000 characters)"}))
 		return
@@ -1310,7 +1454,7 @@ func (r *Router) handleWSMessageEdit(c *websocket.Conn, env websocket.Envelope) 
 	}
 	msg.Content = data.Content
 	if err := r.services.UpdateMessage(context.Background(), msg); err != nil {
-		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": err.Error()}))
+		wsError(c, err, "ws update message failed")
 		return
 	}
 	r.hub.BroadcastToChannel(msg.ChannelID, websocket.NewEnvelope(websocket.EventMessageEdit, msg))
@@ -1343,7 +1487,7 @@ func (r *Router) handleWSMessageDelete(c *websocket.Conn, env websocket.Envelope
 		return
 	}
 	if err := r.services.DeleteMessage(context.Background(), data.MessageID); err != nil {
-		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": err.Error()}))
+		wsError(c, err, "ws delete message failed")
 		return
 	}
 	r.hub.BroadcastToChannel(msg.ChannelID, websocket.NewEnvelope(websocket.EventMessageDel, map[string]string{"id": data.MessageID}))
@@ -1379,7 +1523,7 @@ func (r *Router) handleCreateApproval(w http.ResponseWriter, req *http.Request) 
 		Payload:     body.Payload,
 	}
 	if err := r.services.CreateApproval(req.Context(), a); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	// Broadcast to workspace that an approval is pending
@@ -1388,12 +1532,17 @@ func (r *Router) handleCreateApproval(w http.ResponseWriter, req *http.Request) 
 }
 
 func (r *Router) handleGetApproval(w http.ResponseWriter, req *http.Request) {
-	a, err := r.services.GetApproval(req.Context(), chi.URLParam(req, "id"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	caller := memberFromContext(req)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if a == nil {
+	a, err := r.services.GetApproval(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if a == nil || a.WorkspaceID != caller.WorkspaceID {
 		writeError(w, http.StatusNotFound, "approval not found")
 		return
 	}
@@ -1404,7 +1553,7 @@ func (r *Router) handleListApprovals(w http.ResponseWriter, req *http.Request) {
 	status := proto.ApprovalStatus(req.URL.Query().Get("status"))
 	approvals, err := r.services.ListApprovals(req.Context(), chi.URLParam(req, "id"), status)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, approvals)
@@ -1419,7 +1568,7 @@ func (r *Router) handleReviewApproval(w http.ResponseWriter, req *http.Request) 
 	approvalID := chi.URLParam(req, "id")
 	existing, err := r.services.GetApproval(req.Context(), approvalID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	if existing == nil {
@@ -1447,7 +1596,7 @@ func (r *Router) handleReviewApproval(w http.ResponseWriter, req *http.Request) 
 	existing.ReviewNote = body.Note
 	existing.ReviewedAt = time.Now().UnixMilli()
 	if err := r.services.UpdateApproval(req.Context(), existing); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	// Notify the agent of the result
@@ -1488,7 +1637,7 @@ func (r *Router) handleWSApprovalRequest(c *websocket.Conn, env websocket.Envelo
 	}
 	a.WorkspaceID = member.WorkspaceID
 	if err := r.services.CreateApproval(context.Background(), a); err != nil {
-		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": err.Error()}))
+		wsError(c, err, "ws create approval failed")
 		return
 	}
 	// Notify humans that approval is pending
@@ -1499,34 +1648,37 @@ func (r *Router) handleWSApprovalRequest(c *websocket.Conn, env websocket.Envelo
 // --- Agent metrics ---
 
 func (r *Router) handleGetAgentMetrics(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	agentID := chi.URLParam(req, "id")
-	// Get all metrics from agent_memory with namespace "_metrics"
+	// Verify the agent exists in the same workspace
+	agent, err := r.services.GetMember(req.Context(), agentID)
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if agent == nil || agent.WorkspaceID != member.WorkspaceID {
+		writeError(w, http.StatusNotFound, "agent not found")
+		return
+	}
+	// Get metrics from agent_memory with namespace "_metrics"
 	memories, err := r.services.ListMemory(req.Context(), agentID, "_metrics")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	metrics := make(map[string]interface{})
 	for _, m := range memories {
 		metrics[m.Key] = m.Value
 	}
-	// Also get task counts
-	member, merr := r.services.GetMember(req.Context(), agentID)
-	if merr == nil && member != nil {
-		tasks, terr := r.services.ListTasks(req.Context(), member.WorkspaceID, "")
-		if terr == nil {
-			var assigned, completed int
-			for _, t := range tasks {
-				if t.AssignedTo == agentID {
-					assigned++
-					if t.Status == proto.TaskDone {
-						completed++
-					}
-				}
-			}
-			metrics["tasks_assigned"] = assigned
-			metrics["tasks_completed"] = completed
-		}
+	// Get task counts via efficient store method
+	completed, pending, terr := r.store.CountTasksByAssignee(req.Context(), agentID)
+	if terr == nil {
+		metrics["tasks_assigned"] = completed + pending
+		metrics["tasks_completed"] = completed
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"agent_id": agentID,
@@ -1630,7 +1782,7 @@ func (r *Router) handleWSThreadReply(c *websocket.Conn, env websocket.Envelope) 
 		ThreadID:  data.ParentID,
 	}
 	if err := r.services.CreateMessage(context.Background(), msg); err != nil {
-		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": err.Error()}))
+		wsError(c, err, "ws create thread reply failed")
 		return
 	}
 	r.hub.BroadcastToChannel(data.ChannelID, websocket.NewEnvelope(websocket.EventMessageNew, msg))
@@ -1701,19 +1853,24 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		Path:        savePath,
 	}
 	if err := r.services.CreateFile(req.Context(), f); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, f)
 }
 
 func (r *Router) handleGetFile(w http.ResponseWriter, req *http.Request) {
-	f, err := r.services.GetFile(req.Context(), chi.URLParam(req, "id"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	caller := memberFromContext(req)
+	if caller == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if f == nil {
+	f, err := r.services.GetFile(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if f == nil || f.WorkspaceID != caller.WorkspaceID {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}
@@ -1725,20 +1882,25 @@ func (r *Router) handleListFiles(w http.ResponseWriter, req *http.Request) {
 	offset, _ := strconv.Atoi(req.URL.Query().Get("offset"))
 	files, err := r.services.ListFiles(req.Context(), chi.URLParam(req, "id"), limit, offset)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, files)
 }
 
 func (r *Router) handleDeleteFile(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	fileID := chi.URLParam(req, "id")
 	f, err := r.services.GetFile(req.Context(), fileID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
-	if f == nil {
+	if f == nil || f.WorkspaceID != member.WorkspaceID {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}
@@ -1747,19 +1909,24 @@ func (r *Router) handleDeleteFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if err := r.services.DeleteFile(req.Context(), fileID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func (r *Router) handleDownloadFile(w http.ResponseWriter, req *http.Request) {
-	f, err := r.services.GetFile(req.Context(), chi.URLParam(req, "id"))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if f == nil {
+	f, err := r.services.GetFile(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if f == nil || f.WorkspaceID != member.WorkspaceID {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}
@@ -1794,7 +1961,7 @@ func (r *Router) handlePinMessage(w http.ResponseWriter, req *http.Request) {
 		PinnedBy:  member.ID,
 	}
 	if err := r.services.CreatePin(req.Context(), p); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)
@@ -1803,15 +1970,19 @@ func (r *Router) handlePinMessage(w http.ResponseWriter, req *http.Request) {
 func (r *Router) handleListPins(w http.ResponseWriter, req *http.Request) {
 	pins, err := r.services.ListPins(req.Context(), chi.URLParam(req, "id"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusOK, pins)
 }
 
 func (r *Router) handleUnpinMessage(w http.ResponseWriter, req *http.Request) {
+	if memberFromContext(req) == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
 	if err := r.services.DeletePin(req.Context(), chi.URLParam(req, "id")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -1850,13 +2021,12 @@ func (r *Router) handleCreateDM(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "at least 2 member_ids required")
 		return
 	}
-	// Check if DM already exists
+	// Fast-path: check if DM already exists.
 	existing, _ := r.services.GetDMChannel(req.Context(), workspaceID, body.MemberIDs)
 	if existing != nil {
 		writeJSON(w, http.StatusOK, existing)
 		return
 	}
-	// Create new DM channel
 	chType := proto.ChannelDM
 	if len(body.MemberIDs) > 2 {
 		chType = proto.ChannelGroupDM
@@ -1867,16 +2037,26 @@ func (r *Router) handleCreateDM(w http.ResponseWriter, req *http.Request) {
 		Type:        chType,
 	}
 	if err := r.services.CreateDMChannel(req.Context(), ch, body.MemberIDs); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	writeJSON(w, http.StatusCreated, ch)
 }
 
 func (r *Router) handleListDMs(w http.ResponseWriter, req *http.Request) {
-	channels, err := r.services.ListDMChannels(req.Context(), chi.URLParam(req, "id"))
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	memberID := chi.URLParam(req, "id")
+	if member.ID != memberID {
+		writeError(w, http.StatusForbidden, "cannot list another member's DMs")
+		return
+	}
+	channels, err := r.services.ListDMChannels(req.Context(), memberID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to list DMs")
 		return
 	}
 	writeJSON(w, http.StatusOK, channels)
@@ -1885,9 +2065,19 @@ func (r *Router) handleListDMs(w http.ResponseWriter, req *http.Request) {
 // --- Unread handlers ---
 
 func (r *Router) handleGetUnread(w http.ResponseWriter, req *http.Request) {
-	counts, err := r.services.GetUnreadCounts(req.Context(), chi.URLParam(req, "id"))
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	memberID := chi.URLParam(req, "id")
+	if member.ID != memberID {
+		writeError(w, http.StatusForbidden, "cannot view another member's unread counts")
+		return
+	}
+	counts, err := r.services.GetUnreadCounts(req.Context(), memberID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to get unread counts")
 		return
 	}
 	writeJSON(w, http.StatusOK, counts)
@@ -1901,7 +2091,7 @@ func (r *Router) handleMarkRead(w http.ResponseWriter, req *http.Request) {
 	}
 	channelID := chi.URLParam(req, "id")
 	if err := r.services.MarkChannelRead(req.Context(), channelID, member.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		serverError(w, err, "internal error")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -93,8 +94,12 @@ func TestConnAuth(t *testing.T) {
 
 func TestConnSubscribe(t *testing.T) {
 	c := newTestConn("id1", "", false)
-	c.Subscribe("ch1")
-	c.Subscribe("ch2")
+	if ok := c.Subscribe("ch1"); !ok {
+		t.Fatal("expected subscribe ch1 to succeed")
+	}
+	if ok := c.Subscribe("ch2"); !ok {
+		t.Fatal("expected subscribe ch2 to succeed")
+	}
 	if !c.IsSubscribed("ch1") {
 		t.Fatal("expected subscribed to ch1")
 	}
@@ -107,6 +112,23 @@ func TestConnSubscribe(t *testing.T) {
 	c.Unsubscribe("ch1")
 	if c.IsSubscribed("ch1") {
 		t.Fatal("expected unsubscribed from ch1")
+	}
+}
+
+func TestConnSubscribeLimit(t *testing.T) {
+	c := newTestConn("id1", "", false)
+	for i := 0; i < MaxSubscriptions; i++ {
+		if ok := c.Subscribe(fmt.Sprintf("ch%d", i)); !ok {
+			t.Fatalf("expected subscribe ch%d to succeed", i)
+		}
+	}
+	if ok := c.Subscribe("overflow"); ok {
+		t.Fatal("expected subscribe to fail at limit")
+	}
+	// Unsubscribing one should allow another
+	c.Unsubscribe("ch0")
+	if ok := c.Subscribe("new_ch"); !ok {
+		t.Fatal("expected subscribe to succeed after unsubscribe")
 	}
 }
 
@@ -225,9 +247,13 @@ func TestHubClose(t *testing.T) {
 func TestHubBroadcastToChannel(t *testing.T) {
 	hub := NewHub()
 	c1 := newAuthConn("u1", "Alice", false)
-	c1.Subscribe("ch1")
+	if ok := c1.Subscribe("ch1"); !ok {
+		t.Fatal("expected subscribe ch1 to succeed")
+	}
 	c2 := newAuthConn("u2", "Bob", false)
-	c2.Subscribe("ch2")
+	if ok := c2.Subscribe("ch2"); !ok {
+		t.Fatal("expected subscribe ch2 to succeed")
+	}
 
 	hub.Add(c1)
 	hub.Add(c2)

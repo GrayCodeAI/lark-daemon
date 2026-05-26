@@ -108,6 +108,12 @@ func (s *SQLiteStore) UpdateWorkspace(ctx context.Context, ws *proto.Workspace) 
 // --- Members ---
 
 func (s *SQLiteStore) CreateMember(ctx context.Context, m *proto.Member) error {
+	if m.WorkspaceID == "" {
+		return fmt.Errorf("workspace_id is required")
+	}
+	if m.Name == "" {
+		return fmt.Errorf("name is required")
+	}
 	if m.ID == "" {
 		m.ID = uuid.New().String()
 	}
@@ -280,6 +286,9 @@ func (s *SQLiteStore) DeleteMember(ctx context.Context, id string) error {
 // --- Channels ---
 
 func (s *SQLiteStore) CreateChannel(ctx context.Context, ch *proto.Channel) error {
+	if ch.WorkspaceID == "" {
+		return fmt.Errorf("workspace_id is required")
+	}
 	if ch.ID == "" {
 		ch.ID = uuid.New().String()
 	}
@@ -392,6 +401,25 @@ func (s *SQLiteStore) IsChannelMember(ctx context.Context, channelID, memberID s
 	return count > 0, err
 }
 
+// ListMemberChannelIDs returns all channel IDs a member belongs to.
+func (s *SQLiteStore) ListMemberChannelIDs(ctx context.Context, memberID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT channel_id FROM channel_members WHERE member_id = ?`, memberID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *SQLiteStore) UpdateLastRead(ctx context.Context, channelID, memberID string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE channel_members SET last_read_at = ? WHERE channel_id = ? AND member_id = ?`,
@@ -402,6 +430,12 @@ func (s *SQLiteStore) UpdateLastRead(ctx context.Context, channelID, memberID st
 // --- Messages ---
 
 func (s *SQLiteStore) CreateMessage(ctx context.Context, m *proto.Message) error {
+	if m.ChannelID == "" {
+		return fmt.Errorf("channel_id is required")
+	}
+	if m.SenderID == "" {
+		return fmt.Errorf("sender_id is required")
+	}
 	if m.ID == "" {
 		m.ID = uuid.New().String()
 	}
@@ -464,6 +498,14 @@ func (s *SQLiteStore) ListMessagesBySender(ctx context.Context, senderID string)
 	}
 	defer rows.Close()
 	return scanMessages(rows)
+}
+
+// CountMessagesBySender returns the total number of messages sent by a member.
+func (s *SQLiteStore) CountMessagesBySender(ctx context.Context, senderID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM messages WHERE sender_id = ?`, senderID).Scan(&count)
+	return count, err
 }
 
 func (s *SQLiteStore) ListThreadMessages(ctx context.Context, threadID string) ([]*proto.Message, error) {
@@ -698,6 +740,29 @@ func (s *SQLiteStore) UpdateTask(ctx context.Context, t *proto.Task) error {
 func (s *SQLiteStore) DeleteTask(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM tasks WHERE id = ?`, id)
 	return err
+}
+
+// CountTasksByAssignee returns completed and pending task counts for a given assignee.
+func (s *SQLiteStore) CountTasksByAssignee(ctx context.Context, assigneeID string) (completed, pending int, err error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM tasks WHERE assigned_to = ? GROUP BY status`, assigneeID)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return 0, 0, err
+		}
+		if status == string(proto.TaskDone) {
+			completed = count
+		} else {
+			pending += count
+		}
+	}
+	return completed, pending, rows.Err()
 }
 
 // --- Agent Memory ---
@@ -945,6 +1010,27 @@ func (s *SQLiteStore) CreateDMChannel(ctx context.Context, ch *proto.Channel, me
 		return err
 	}
 	defer tx.Rollback()
+
+	// Check for existing DM inside the transaction to prevent TOCTOU race.
+	if len(memberIDs) == 2 {
+		var existingID string
+		err := tx.QueryRowContext(ctx,
+			`SELECT cm1.channel_id FROM channel_members cm1
+			 JOIN channel_members cm2 ON cm1.channel_id = cm2.channel_id
+			 JOIN channels c ON c.id = cm1.channel_id
+			 WHERE c.workspace_id = ? AND c.type = 'dm'
+			 AND cm1.member_id = ? AND cm2.member_id = ?
+			 AND (SELECT COUNT(*) FROM channel_members cm3 WHERE cm3.channel_id = cm1.channel_id) = 2`,
+			ch.WorkspaceID, memberIDs[0], memberIDs[1]).Scan(&existingID)
+		if err == nil {
+			// DM already exists — populate ch.ID so callers can use it.
+			ch.ID = existingID
+			return nil
+		}
+		if err != sql.ErrNoRows {
+			return err
+		}
+	}
 
 	if ch.ID == "" {
 		ch.ID = proto.NewID()

@@ -79,11 +79,18 @@ func (c *Conn) SetIdentity(id, name string, isAgent bool) {
 	c.mu.Unlock()
 }
 
-// Subscribe adds this connection to a channel.
-func (c *Conn) Subscribe(channelID string) {
+// MaxSubscriptions is the maximum number of channels a single connection can subscribe to.
+const MaxSubscriptions = 200
+
+// Subscribe adds this connection to a channel. Returns false if the limit is reached.
+func (c *Conn) Subscribe(channelID string) bool {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.channels) >= MaxSubscriptions {
+		return false
+	}
 	c.channels[channelID] = true
-	c.mu.Unlock()
+	return true
 }
 
 // Unsubscribe removes this connection from a channel.

@@ -34,23 +34,16 @@ func (c *Collector) GetAgentMetrics(ctx context.Context, agentID string) (*Agent
 	m := &AgentMetrics{AgentID: agentID}
 
 	// Count messages sent by this agent
-	msgs, err := c.store.ListMessagesBySender(ctx, agentID)
+	msgCount, err := c.store.CountMessagesBySender(ctx, agentID)
 	if err == nil {
-		m.MessagesSent = len(msgs)
+		m.MessagesSent = msgCount
 	}
 
-	// Count tasks — list all tasks and filter by assignee
-	tasks, err := c.store.ListTasks(ctx, "", "")
+	// Count tasks by assignee
+	completed, pending, err := c.store.CountTasksByAssignee(ctx, agentID)
 	if err == nil {
-		for _, t := range tasks {
-			if t.AssignedTo == agentID {
-				if t.Status == proto.TaskDone {
-					m.TasksCompleted++
-				} else {
-					m.TasksPending++
-				}
-			}
-		}
+		m.TasksCompleted = completed
+		m.TasksPending = pending
 	}
 
 	// Get wake count from agent memory

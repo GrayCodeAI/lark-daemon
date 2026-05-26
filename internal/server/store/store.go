@@ -37,6 +37,7 @@ type Store interface {
 	RemoveChannelMember(ctx context.Context, channelID, memberID string) error
 	ListChannelMembers(ctx context.Context, channelID string) ([]*proto.Member, error)
 	IsChannelMember(ctx context.Context, channelID, memberID string) (bool, error)
+	ListMemberChannelIDs(ctx context.Context, memberID string) ([]string, error)
 	UpdateLastRead(ctx context.Context, channelID, memberID string) error
 
 	// Message operations.
@@ -45,6 +46,7 @@ type Store interface {
 	ListMessages(ctx context.Context, channelID string, limit, offset int) ([]*proto.Message, error)
 	ListThreadMessages(ctx context.Context, threadID string) ([]*proto.Message, error)
 	ListMessagesBySender(ctx context.Context, senderID string) ([]*proto.Message, error)
+	CountMessagesBySender(ctx context.Context, senderID string) (int, error)
 	UpdateMessage(ctx context.Context, m *proto.Message) error
 	DeleteMessage(ctx context.Context, id string) error
 	GetRecentMessages(ctx context.Context, channelID string, limit int) ([]*proto.Message, error)
@@ -61,6 +63,7 @@ type Store interface {
 	CreateTask(ctx context.Context, t *proto.Task) error
 	GetTask(ctx context.Context, id string) (*proto.Task, error)
 	ListTasks(ctx context.Context, workspaceID string, status proto.TaskStatus) ([]*proto.Task, error)
+	CountTasksByAssignee(ctx context.Context, assigneeID string) (completed, pending int, err error)
 	UpdateTask(ctx context.Context, t *proto.Task) error
 	DeleteTask(ctx context.Context, id string) error
 
