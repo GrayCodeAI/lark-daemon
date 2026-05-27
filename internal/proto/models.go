@@ -204,6 +204,17 @@ type File struct {
 	CreatedAt   int64  `json:"created_at"`
 }
 
+// Webhook represents an incoming webhook that posts to a channel.
+type Webhook struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	ChannelID   string `json:"channel_id"`
+	Name        string `json:"name"`
+	Secret      string `json:"secret,omitempty"`
+	CreatedBy   string `json:"created_by"`
+	CreatedAt   int64  `json:"created_at"`
+}
+
 // RoleCard defines an agent's identity.
 type RoleCard struct {
 	SystemPrompt string   `json:"system_prompt"`

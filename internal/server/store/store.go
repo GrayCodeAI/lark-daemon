@@ -101,6 +101,12 @@ type Store interface {
 	ListApprovals(ctx context.Context, workspaceID string, status proto.ApprovalStatus) ([]*proto.ApprovalRequest, error)
 	UpdateApproval(ctx context.Context, a *proto.ApprovalRequest) error
 
+	// Webhook operations.
+	CreateWebhook(ctx context.Context, w *proto.Webhook) error
+	GetWebhook(ctx context.Context, id string) (*proto.Webhook, error)
+	ListWebhooks(ctx context.Context, workspaceID string) ([]*proto.Webhook, error)
+	DeleteWebhook(ctx context.Context, id string) error
+
 	// Lifecycle.
 	Ping(ctx context.Context) error
 	Close() error

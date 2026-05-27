@@ -279,3 +279,22 @@ func (s *Services) ListApprovals(ctx context.Context, workspaceID string, status
 func (s *Services) UpdateApproval(ctx context.Context, a *proto.ApprovalRequest) error {
 	return s.store.UpdateApproval(ctx, a)
 }
+
+// --- Webhooks ---
+
+func (s *Services) CreateWebhook(ctx context.Context, w *proto.Webhook) error {
+	w.Secret = websocket.GenerateAPIKey("wh_")
+	return s.store.CreateWebhook(ctx, w)
+}
+
+func (s *Services) GetWebhook(ctx context.Context, id string) (*proto.Webhook, error) {
+	return s.store.GetWebhook(ctx, id)
+}
+
+func (s *Services) ListWebhooks(ctx context.Context, workspaceID string) ([]*proto.Webhook, error) {
+	return s.store.ListWebhooks(ctx, workspaceID)
+}
+
+func (s *Services) DeleteWebhook(ctx context.Context, id string) error {
+	return s.store.DeleteWebhook(ctx, id)
+}

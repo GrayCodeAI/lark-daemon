@@ -1237,6 +1237,58 @@ func (s *SQLiteStore) UpdateApproval(ctx context.Context, a *proto.ApprovalReque
 	return err
 }
 
+// --- Webhooks ---
+
+func (s *SQLiteStore) CreateWebhook(ctx context.Context, w *proto.Webhook) error {
+	if w.ID == "" {
+		w.ID = uuid.New().String()
+	}
+	if w.CreatedAt == 0 {
+		w.CreatedAt = time.Now().UnixMilli()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO webhooks (id, workspace_id, channel_id, name, secret, created_by, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.WorkspaceID, w.ChannelID, w.Name, w.Secret, w.CreatedBy, w.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetWebhook(ctx context.Context, id string) (*proto.Webhook, error) {
+	w := &proto.Webhook{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, channel_id, name, secret, created_by, created_at
+		 FROM webhooks WHERE id = ?`, id).
+		Scan(&w.ID, &w.WorkspaceID, &w.ChannelID, &w.Name, &w.Secret, &w.CreatedBy, &w.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return w, err
+}
+
+func (s *SQLiteStore) ListWebhooks(ctx context.Context, workspaceID string) ([]*proto.Webhook, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, channel_id, name, secret, created_by, created_at
+		 FROM webhooks WHERE workspace_id = ? ORDER BY created_at`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.Webhook
+	for rows.Next() {
+		w := &proto.Webhook{}
+		if err := rows.Scan(&w.ID, &w.WorkspaceID, &w.ChannelID, &w.Name, &w.Secret, &w.CreatedBy, &w.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteWebhook(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM webhooks WHERE id = ?`, id)
+	return err
+}
+
 // --- Helpers ---
 
 func nullStr(s string) interface{} {

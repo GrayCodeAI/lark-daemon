@@ -245,9 +245,15 @@ func (r *Router) setupRoutes() {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	r.Group(func(router chi.Router) {
+		r.Group(func(router chi.Router) {
 		router.Use(rateLimitMiddleware(r.rateLimiter))
 		router.Use(cacheControlMiddleware)
+
+		// Prometheus-style metrics (no auth required)
+		router.Get("/metrics", r.handleMetrics)
+
+		// Incoming webhook execution (authenticated by secret in URL)
+		router.Post("/webhooks/{id}/{secret}", r.handleWebhookExecute)
 
 		router.Route("/v1", func(v1 chi.Router) {
 		// Unauthenticated bootstrap routes
@@ -257,6 +263,9 @@ func (r *Router) setupRoutes() {
 		// All other routes require authentication
 		v1.Group(func(p chi.Router) {
 			p.Use(r.authenticate)
+
+			// Admin
+			p.Get("/admin/stats", r.handleAdminStats)
 
 			// Workspaces
 			p.Get("/workspaces", r.handleListWorkspaces)
@@ -336,6 +345,11 @@ func (r *Router) setupRoutes() {
 			// Unread
 			p.Get("/members/{id}/unread", r.handleGetUnread)
 			p.Post("/channels/{id}/read", r.handleMarkRead)
+
+			// Webhooks management
+			p.Post("/workspaces/{id}/webhooks", r.handleCreateWebhook)
+			p.Get("/workspaces/{id}/webhooks", r.handleListWebhooks)
+			p.Delete("/webhooks/{id}", r.handleDeleteWebhook)
 		})
 	})
 
@@ -1109,6 +1123,7 @@ func (r *Router) handleAddReaction(w http.ResponseWriter, req *http.Request) {
 		serverError(w, err, "internal error")
 		return
 	}
+	r.broadcastReactionEvent(reaction.MessageID, reaction)
 	writeJSON(w, http.StatusCreated, reaction)
 }
 
@@ -1202,6 +1217,7 @@ func (r *Router) handleCreateTask(w http.ResponseWriter, req *http.Request) {
 		serverError(w, err, "internal error")
 		return
 	}
+	r.broadcastTaskEvent(task)
 	writeJSON(w, http.StatusCreated, task)
 }
 
@@ -1249,6 +1265,7 @@ func (r *Router) handleUpdateTask(w http.ResponseWriter, req *http.Request) {
 		serverError(w, err, "internal error")
 		return
 	}
+	r.broadcastTaskEvent(existing)
 	writeJSON(w, http.StatusOK, existing)
 }
 
@@ -2182,6 +2199,7 @@ func (r *Router) handlePinMessage(w http.ResponseWriter, req *http.Request) {
 		serverError(w, err, "internal error")
 		return
 	}
+	r.broadcastPinEvent(channelID, p)
 	writeJSON(w, http.StatusCreated, p)
 }
 
@@ -2327,4 +2345,152 @@ func (r *Router) handleMarkRead(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Webhook handlers ---
+
+func (r *Router) handleCreateWebhook(w http.ResponseWriter, req *http.Request) {
+	member := requireWorkspaceAuth(w, req, chi.URLParam(req, "id"))
+	if member == nil {
+		return
+	}
+	var body struct {
+		ChannelID string `json:"channel_id"`
+		Name      string `json:"name"`
+	}
+	if err := decodeJSON(req, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.ChannelID == "" || body.Name == "" {
+		writeError(w, http.StatusBadRequest, "channel_id and name required")
+		return
+	}
+	wb := &proto.Webhook{
+		WorkspaceID: chi.URLParam(req, "id"),
+		ChannelID:   body.ChannelID,
+		Name:        body.Name,
+		CreatedBy:   member.ID,
+	}
+	if err := r.services.CreateWebhook(req.Context(), wb); err != nil {
+		serverError(w, err, "create webhook failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, wb)
+}
+
+func (r *Router) handleListWebhooks(w http.ResponseWriter, req *http.Request) {
+	if requireWorkspaceAuth(w, req, chi.URLParam(req, "id")) == nil {
+		return
+	}
+	webhooks, err := r.services.ListWebhooks(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		serverError(w, err, "list webhooks failed")
+		return
+	}
+	// Mask secrets in list responses
+	for _, wb := range webhooks {
+		if len(wb.Secret) > 8 {
+			wb.Secret = wb.Secret[:8] + "..."
+		}
+	}
+	writeJSON(w, http.StatusOK, webhooks)
+}
+
+func (r *Router) handleDeleteWebhook(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	if err := r.services.DeleteWebhook(req.Context(), chi.URLParam(req, "id")); err != nil {
+		serverError(w, err, "delete webhook failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleWebhookExecute handles unauthenticated webhook POST requests.
+func (r *Router) handleWebhookExecute(w http.ResponseWriter, req *http.Request) {
+	webhookID := chi.URLParam(req, "id")
+	secret := chi.URLParam(req, "secret")
+	wb, err := r.services.GetWebhook(req.Context(), webhookID)
+	if err != nil {
+		serverError(w, err, "get webhook failed")
+		return
+	}
+	if wb == nil || wb.Secret != secret {
+		writeError(w, http.StatusUnauthorized, "invalid webhook")
+		return
+	}
+	var body struct {
+		Content string `json:"content"`
+		Text    string `json:"text"`
+	}
+	if err := decodeJSON(req, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	content := body.Content
+	if content == "" {
+		content = body.Text
+	}
+	if content == "" {
+		writeError(w, http.StatusBadRequest, "content or text required")
+		return
+	}
+	msg := &proto.Message{
+		ChannelID: wb.ChannelID,
+		SenderID:  wb.CreatedBy,
+		Content:   content,
+	}
+	if err := r.services.CreateMessage(req.Context(), msg); err != nil {
+		serverError(w, err, "webhook message failed")
+		return
+	}
+	r.hub.SendNewMessage(msg.ChannelID, msg)
+	writeJSON(w, http.StatusCreated, map[string]string{"status": "ok", "message_id": msg.ID})
+}
+
+// --- Admin handlers ---
+
+func (r *Router) handleAdminStats(w http.ResponseWriter, req *http.Request) {
+	if memberFromContext(req) == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	stats := map[string]any{
+		"ws_connections": r.hub.Total(),
+		"ws_agents":      r.hub.AgentCount(),
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// --- Metrics ---
+
+func (r *Router) handleMetrics(w http.ResponseWriter, req *http.Request) {
+	stats := map[string]any{
+		"connections": r.hub.Total(),
+		"agents":      r.hub.AgentCount(),
+	}
+	writeJSON(w, http.StatusOK, stats)
+}
+
+// --- Real-time WS event helpers ---
+
+func (r *Router) broadcastReactionEvent(msgID string, reaction *proto.Reaction) {
+	// Get the message to find its channel
+	msg, err := r.services.GetMessage(context.Background(), msgID)
+	if err != nil || msg == nil {
+		return
+	}
+	r.hub.BroadcastToChannel(msg.ChannelID, websocket.NewEnvelope("reaction.add", reaction))
+}
+
+func (r *Router) broadcastPinEvent(channelID string, pin *proto.Pin) {
+	r.hub.BroadcastToChannel(channelID, websocket.NewEnvelope("pin.add", pin))
+}
+
+func (r *Router) broadcastTaskEvent(task *proto.Task) {
+	r.hub.BroadcastToAll(websocket.NewEnvelope("task.update", task))
 }

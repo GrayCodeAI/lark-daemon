@@ -171,4 +171,17 @@ CREATE TABLE IF NOT EXISTS approval_requests (
 );
 
 CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(workspace_id, status);
+
+-- Webhooks
+CREATE TABLE IF NOT EXISTS webhooks (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhooks_workspace ON webhooks(workspace_id);
 `
