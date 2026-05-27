@@ -253,6 +253,7 @@ func (r *Router) setupRoutes() {
 		r.Group(func(router chi.Router) {
 		router.Use(rateLimitMiddleware(r.rateLimiter))
 		router.Use(cacheControlMiddleware)
+		router.Use(auditLogMiddleware(r.logger))
 
 		// Prometheus-style metrics (no auth required)
 		router.Get("/metrics", r.handleMetrics)
@@ -273,6 +274,8 @@ func (r *Router) setupRoutes() {
 
 			// Admin
 			p.Get("/admin/stats", r.handleAdminStats)
+			p.Get("/admin/workspaces", r.handleAdminListWorkspaces)
+			p.Get("/admin/agents", r.handleAdminListAgents)
 
 			// Workspaces
 			p.Get("/workspaces", r.handleListWorkspaces)
@@ -368,6 +371,23 @@ func (r *Router) setupRoutes() {
 	// WebSocket (rate limited)
 	router.Get("/ws", r.handleWebSocket)
 	})
+}
+
+// auditLogMiddleware logs all mutation operations (POST, PATCH, DELETE).
+func auditLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "POST" || r.Method == "PATCH" || r.Method == "DELETE" {
+				member := memberFromContext(r)
+				uid := "anonymous"
+				if member != nil {
+					uid = member.ID
+				}
+				logger.Info("audit", "method", r.Method, "path", r.URL.Path, "user", uid)
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // --- Helpers ---
@@ -1327,6 +1347,7 @@ func (r *Router) handleCreateTask(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.broadcastTaskEvent(task)
+	r.notifyAssignee(task)
 	writeJSON(w, http.StatusCreated, task)
 }
 
@@ -1375,6 +1396,7 @@ func (r *Router) handleUpdateTask(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.broadcastTaskEvent(existing)
+	r.notifyAssignee(existing)
 	writeJSON(w, http.StatusOK, existing)
 }
 
@@ -2624,11 +2646,57 @@ func (r *Router) handleAdminStats(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
+	ws, _ := r.services.ListWorkspaces(req.Context())
 	stats := map[string]any{
 		"ws_connections": r.hub.Total(),
 		"ws_agents":      r.hub.AgentCount(),
+		"workspaces":     len(ws),
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+func (r *Router) handleAdminListWorkspaces(w http.ResponseWriter, req *http.Request) {
+	if memberFromContext(req) == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	ws, err := r.services.ListWorkspaces(req.Context())
+	if err != nil {
+		serverError(w, err, "list workspaces failed")
+		return
+	}
+	for _, w := range ws {
+		w.AgentProvisionToken = ""
+	}
+	writeJSON(w, http.StatusOK, ws)
+}
+
+func (r *Router) handleAdminListAgents(w http.ResponseWriter, req *http.Request) {
+	if memberFromContext(req) == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	ws, _ := r.services.ListWorkspaces(req.Context())
+	allAgents := make([]map[string]any, 0)
+	for _, w := range ws {
+		members, err := r.services.ListMembers(req.Context(), w.ID)
+		if err != nil {
+			continue
+		}
+		for _, m := range members {
+			if m.Type == proto.MemberAgent {
+				allAgents = append(allAgents, map[string]any{
+					"id":           m.ID,
+					"name":         m.Name,
+					"workspace_id": w.ID,
+					"workspace":    w.Name,
+					"online":       r.hub.GetAgent(m.ID) != nil,
+					"status":       m.Status,
+				})
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, allAgents)
 }
 
 // --- Metrics ---
@@ -2658,4 +2726,23 @@ func (r *Router) broadcastPinEvent(channelID string, pin *proto.Pin) {
 
 func (r *Router) broadcastTaskEvent(task *proto.Task) {
 	r.hub.BroadcastToAll(websocket.NewEnvelope("task.update", task))
+}
+
+func (r *Router) notifyAssignee(task *proto.Task) {
+	if task.AssignedTo == "" {
+		return
+	}
+	if c := r.hub.GetConn(task.AssignedTo); c != nil {
+		c.Send(websocket.NewEnvelope("task.assigned", map[string]any{
+			"task":    task,
+			"message": "You have been assigned a task: " + task.Title,
+		}))
+	}
+	// If assignee is an agent, wake them
+	r.hub.WakeAgent(task.AssignedTo, websocket.AgentWakeData{
+		Reason: "task_assigned",
+		Context: websocket.WakeContext{
+			Channel: map[string]string{"id": task.ChannelID},
+		},
+	})
 }
