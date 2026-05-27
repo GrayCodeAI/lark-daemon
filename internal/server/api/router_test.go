@@ -45,7 +45,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	rl := NewRateLimiter(1000) // high limit for tests
 	str, _ := storage.NewStore(storage.Config{Type: "local", LocalDir: "/tmp/lark-test"})
 
-	router := NewRouter(svc, st, hub, auth, logger, ha, "*", collector, rl, str)
+	router := NewRouter(svc, st, hub, auth, logger, ha, "*", collector, rl, str, nil)
 	ts := httptest.NewServer(router)
 	t.Cleanup(ts.Close)
 

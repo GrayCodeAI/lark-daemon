@@ -18,13 +18,15 @@ type Config struct {
 	CORSOrigin string
 	TLSCert    string
 	TLSKey     string
-	RateLimit  int
+	RateLimit   int
 	StorageType string
-	S3Bucket   string
-	S3Region   string
-	S3Endpoint string
-	S3Key      string
-	S3Secret   string
+	S3Bucket    string
+	S3Region    string
+	S3Endpoint  string
+	S3Key       string
+	S3Secret    string
+	GithubClientID string
+	GithubSecret   string
 }
 
 // LoadConfig loads configuration from environment variables.
@@ -47,6 +49,8 @@ func LoadConfig() *Config {
 		S3Endpoint:  getEnv("LARK_S3_ENDPOINT", ""),
 		S3Key:       getEnv("LARK_S3_KEY", ""),
 		S3Secret:    getEnv("LARK_S3_SECRET", ""),
+		GithubClientID: getEnv("LARK_GITHUB_CLIENT_ID", ""),
+		GithubSecret:   getEnv("LARK_GITHUB_SECRET", ""),
 	}
 	return cfg
 }

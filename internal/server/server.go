@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"lark-daemon/internal/server/api"
 	"lark-daemon/internal/server/metrics"
 	"lark-daemon/internal/server/service"
@@ -83,7 +85,25 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("storage init: %w", err)
 	}
-	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin, collector, rl, storeBackend)
+	var oauthCfg *oauth2.Config
+	if cfg.GithubClientID != "" && cfg.GithubSecret != "" {
+		scheme := "http"
+		if cfg.TLSCert != "" {
+			scheme = "https"
+		}
+		redirectURL := fmt.Sprintf("%s://%s:%d/v1/auth/github/callback", scheme, cfg.Host, cfg.Port)
+		oauthCfg = &oauth2.Config{
+			ClientID:     cfg.GithubClientID,
+			ClientSecret: cfg.GithubSecret,
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://github.com/login/oauth/authorize",
+				TokenURL: "https://github.com/login/oauth/access_token",
+			},
+			RedirectURL: redirectURL,
+			Scopes:      []string{"read:user", "user:email"},
+		}
+	}
+	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin, collector, rl, storeBackend, oauthCfg)
 
 	return &Server{
 		config:    &cfg,

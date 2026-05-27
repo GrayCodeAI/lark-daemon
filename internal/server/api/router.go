@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
 
 	"lark-daemon/internal/proto"
 	"lark-daemon/internal/server/metrics"
@@ -99,10 +101,11 @@ type Router struct {
 	collector    *metrics.Collector
 	rateLimiter  *RateLimiter
 	storage      storage.Store
+	githubOAuth  *oauth2.Config
 }
 
 // NewRouter creates a new API router with all routes registered.
-func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore, corsOrigin string, collector *metrics.Collector, rl *RateLimiter, str storage.Store) *Router {
+func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore, corsOrigin string, collector *metrics.Collector, rl *RateLimiter, str storage.Store, githubOAuth *oauth2.Config) *Router {
 	r := &Router{
 		Router:       chi.NewRouter(),
 		services:     services,
@@ -116,6 +119,7 @@ func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, a
 		collector:    collector,
 		rateLimiter:  rl,
 		storage:      str,
+		githubOAuth:  githubOAuth,
 	}
 	// Forward the hub's wake callback to the agent manager so HandleAgentHello also records metrics
 	r.agentManager.SetWakeCallback(hub.WakeCallback())
@@ -265,6 +269,8 @@ func (r *Router) setupRoutes() {
 		// Unauthenticated bootstrap routes
 		v1.Post("/auth/register", r.handleRegister)
 		v1.Post("/auth/login", r.handleLogin)
+		v1.Get("/auth/github", r.handleGithubLogin)
+		v1.Get("/auth/github/callback", r.handleGithubCallback)
 		v1.Post("/workspaces", r.handleCreateWorkspace)
 		v1.Post("/workspaces/{id}/agents", r.handleAgentProvision)
 
@@ -568,6 +574,100 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 		"workspace_id": member.WorkspaceID,
 		"name":       member.Name,
 	})
+}
+
+// --- OAuth handlers ---
+
+func (r *Router) handleGithubLogin(w http.ResponseWriter, req *http.Request) {
+	if r.githubOAuth == nil {
+		writeError(w, http.StatusBadRequest, "GitHub OAuth not configured")
+		return
+	}
+	url := r.githubOAuth.AuthCodeURL("state", oauth2.AccessTypeOffline)
+	http.Redirect(w, req, url, http.StatusFound)
+}
+
+func (r *Router) handleGithubCallback(w http.ResponseWriter, req *http.Request) {
+	if r.githubOAuth == nil {
+		writeError(w, http.StatusBadRequest, "GitHub OAuth not configured")
+		return
+	}
+	code := req.URL.Query().Get("code")
+	if code == "" {
+		writeError(w, http.StatusBadRequest, "missing code")
+		return
+	}
+	tok, err := r.githubOAuth.Exchange(req.Context(), code)
+	if err != nil {
+		serverError(w, err, "oauth exchange failed")
+		return
+	}
+	// Fetch user info from GitHub
+	ghReq, _ := http.NewRequest("GET", "https://api.github.com/user", nil)
+	ghReq.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	ghResp, err := http.DefaultClient.Do(ghReq)
+	if err != nil {
+		serverError(w, err, "github user fetch failed")
+		return
+	}
+	defer ghResp.Body.Close()
+	var ghUser struct {
+		ID    int    `json:"id"`
+		Login string `json:"login"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	if err := json.NewDecoder(ghResp.Body).Decode(&ghUser); err != nil {
+		serverError(w, err, "github user decode failed")
+		return
+	}
+	email := ghUser.Email
+	if email == "" {
+		email = fmt.Sprintf("%s@github-user", ghUser.Login)
+	}
+	name := ghUser.Name
+	if name == "" {
+		name = ghUser.Login
+	}
+	// Check if user exists
+	member, err := r.store.GetMemberByEmail(req.Context(), email)
+	if err != nil {
+		serverError(w, err, "lookup failed")
+		return
+	}
+	if member == nil {
+		// Create workspace + member
+		ws := &proto.Workspace{
+			Name: name + "'s Workspace",
+			Slug: ghUser.Login + "-" + uuid.New().String()[:8],
+		}
+		if err := r.services.CreateWorkspace(req.Context(), ws); err != nil {
+			serverError(w, err, "create workspace failed")
+			return
+		}
+		member = &proto.Member{
+			WorkspaceID: ws.ID,
+			Name:        name,
+			Email:       email,
+			Type:        proto.MemberHuman,
+			Status:      proto.PresenceOffline,
+		}
+		if err := r.services.CreateMember(req.Context(), member); err != nil {
+			serverError(w, err, "create member failed")
+			return
+		}
+	}
+	token, err := r.auth.GenerateToken(member.ID, member.WorkspaceID)
+	if err != nil {
+		serverError(w, err, "generate token failed")
+		return
+	}
+	// Redirect to frontend with token
+	redirectURL := req.URL.Query().Get("redirect")
+	if redirectURL == "" {
+		redirectURL = "/"
+	}
+	http.Redirect(w, req, redirectURL+"?token="+token, http.StatusFound)
 }
 
 // --- Workspaces ---
