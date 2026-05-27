@@ -1,14 +1,46 @@
-# Compiled binaries
+# Binaries
 bin/
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
 lark-server
+
+# Test
+*.test
+coverage.out
+coverage.html
 
 # Data directory (runtime)
 data/
+
+# Vendor
+vendor/
+
+# Temporary files
+tmp/
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
 
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
-store.test
+.editorconfig
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Air (live reload)
+.air.toml

@@ -1,57 +1,53 @@
-.PHONY: build run clean test lint fmt tidy docker up down
+.PHONY: build test lint run docker-build docker-up docker-down clean fmt tidy
 
-# Build server binary.
+# ---------- Build ----------
+
+## Build the server binary.
 build:
-	go build -o bin/lark-server ./cmd/lark-server
+	go build -ldflags="-s -w" -o bin/lark-server ./cmd/lark-server
 
-# Build server only.
-build-server:
-	go build -o bin/lark-server ./cmd/lark-server
+# ---------- Test ----------
 
-# Run the server.
-run: build-server
-	./bin/lark-server
-
-# Run with live reload (requires air).
-dev:
-	air -c .air.toml
-
-# Run tests.
+## Run all tests with race detector.
 test:
-	go test ./... -v -count=1
+	go test ./... -race -count=1
 
-# Run linter.
+# ---------- Lint ----------
+
+## Run golangci-lint.
 lint:
 	golangci-lint run ./...
 
-# Format code.
+# ---------- Run ----------
+
+## Build and run the server locally.
+run: build
+	./bin/lark-server
+
+# ---------- Docker ----------
+
+## Build the Docker image.
+docker-build:
+	docker build -t lark-daemon:latest .
+
+## Start services with Docker Compose.
+docker-up:
+	docker compose up -d
+
+## Stop services.
+docker-down:
+	docker compose down
+
+# ---------- Utilities ----------
+
+## Format all Go source files.
 fmt:
 	go fmt ./...
 
-# Tidy dependencies.
+## Tidy module dependencies.
 tidy:
 	go mod tidy
 
-# Clean build artifacts.
+## Remove build artifacts and runtime data.
 clean:
-	rm -rf bin/ data/
-
-# Generate docs.
-docs:
-	@echo "Docs generation not yet implemented"
-
-# Database migrations.
-migrate:
-	@echo "Migrations run automatically on server start"
-
-# Docker build.
-docker:
-	docker build -t lark:latest .
-
-# Docker compose up.
-up:
-	docker compose up -d
-
-# Docker compose down.
-down:
-	docker compose down
+	rm -rf bin/ data/ coverage.out

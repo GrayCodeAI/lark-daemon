@@ -1,25 +1,38 @@
-version: '3.8'
-
 services:
   lark:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lark-daemon
     ports:
       - "4001:4001"
     volumes:
+      # Persist the database and uploaded files across restarts
       - lark-data:/app/data
     environment:
       - LARK_HOST=0.0.0.0
       - LARK_PORT=4001
-      - LARK_DB_PATH=/app/data/lark.sqlite
+      - LARK_DB_PATH=/app/data/lark.db
       - LARK_DATA_DIR=/app/data
+      # Set a strong secret in production: openssl rand -hex 32
       - LARK_JWT_SECRET=${LARK_JWT_SECRET:-change-me-in-production}
       - LARK_LOG_LEVEL=info
+      - LARK_LOG_FORMAT=json
+      - LARK_RATE_LIMIT=100
+      # Uncomment to enable S3 file storage:
+      # - LARK_STORAGE_TYPE=s3
+      # - LARK_S3_BUCKET=your-bucket
+      # - LARK_S3_REGION=us-east-1
+      # - LARK_S3_KEY=your-key
+      # - LARK_S3_SECRET=your-secret
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:4001/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s
 
 volumes:
   lark-data:
+    driver: local
