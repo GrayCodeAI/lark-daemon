@@ -15,6 +15,9 @@ type Config struct {
 	JWTSecret  string
 	LogLevel   string
 	CORSOrigin string
+	TLSCert    string
+	TLSKey     string
+	RateLimit  int
 }
 
 // LoadConfig loads configuration from environment variables.
@@ -27,6 +30,9 @@ func LoadConfig() *Config {
 		JWTSecret:  getEnv("LARK_JWT_SECRET", ""),
 		LogLevel:   getEnv("LARK_LOG_LEVEL", "info"),
 		CORSOrigin: getEnv("LARK_CORS_ORIGIN", ""),
+		TLSCert:    getEnv("LARK_TLS_CERT", ""),
+		TLSKey:     getEnv("LARK_TLS_KEY", ""),
+		RateLimit:  getEnvInt("LARK_RATE_LIMIT", 100),
 	}
 	return cfg
 }

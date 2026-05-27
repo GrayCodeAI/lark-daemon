@@ -105,6 +105,11 @@ func (s *SQLiteStore) UpdateWorkspace(ctx context.Context, ws *proto.Workspace) 
 	return err
 }
 
+func (s *SQLiteStore) DeleteWorkspace(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM workspaces WHERE id = ?`, id)
+	return err
+}
+
 // --- Members ---
 
 func (s *SQLiteStore) CreateMember(ctx context.Context, m *proto.Member) error {
@@ -223,6 +228,23 @@ func (s *SQLiteStore) ListMembers(ctx context.Context, workspaceID string) ([]*p
 	return scanMembers(rows)
 }
 
+func (s *SQLiteStore) ListMembersPaginated(ctx context.Context, workspaceID string, limit, offset int) ([]*proto.Member, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		 FROM members WHERE workspace_id = ? ORDER BY name LIMIT ? OFFSET ?`, workspaceID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMembers(rows)
+}
+
 func scanMembers(rows *sql.Rows) ([]*proto.Member, error) {
 	var out []*proto.Member
 	for rows.Next() {
@@ -333,6 +355,27 @@ func (s *SQLiteStore) ListChannels(ctx context.Context, workspaceID string) ([]*
 		return nil, err
 	}
 	defer rows.Close()
+	return scanChannels(rows)
+}
+
+func (s *SQLiteStore) ListChannelsPaginated(ctx context.Context, workspaceID string, limit, offset int) ([]*proto.Channel, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, name, type, topic, is_private, created_at, updated_at
+		 FROM channels WHERE workspace_id = ? ORDER BY name LIMIT ? OFFSET ?`, workspaceID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanChannels(rows)
+}
+
+func scanChannels(rows *sql.Rows) ([]*proto.Channel, error) {
 	var out []*proto.Channel
 	for rows.Next() {
 		ch := &proto.Channel{}

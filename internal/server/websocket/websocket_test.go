@@ -250,10 +250,12 @@ func TestHubBroadcastToChannel(t *testing.T) {
 	if ok := c1.Subscribe("ch1"); !ok {
 		t.Fatal("expected subscribe ch1 to succeed")
 	}
+	hub.SubscribeChannel("ch1", c1)
 	c2 := newAuthConn("u2", "Bob", false)
 	if ok := c2.Subscribe("ch2"); !ok {
 		t.Fatal("expected subscribe ch2 to succeed")
 	}
+	hub.SubscribeChannel("ch2", c2)
 
 	hub.Add(c1)
 	hub.Add(c2)

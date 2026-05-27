@@ -128,6 +128,11 @@ func (c *Conn) Send(env Envelope) {
 
 // Close signals the WritePump to stop and closes the underlying connection.
 func (c *Conn) Close() {
+	c.CloseWithMessage(0, nil)
+}
+
+// CloseWithMessage sends a close frame (if messageType > 0) then closes.
+func (c *Conn) CloseWithMessage(messageType int, data []byte) {
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -136,10 +141,11 @@ func (c *Conn) Close() {
 	c.closed = true
 	close(c.send)
 	c.mu.Unlock()
-	// The underlying conn is closed by WritePump's defer after the send channel drains.
-	// If WritePump has already exited, close here as a safety net.
 	if c.conn != nil {
 		c.writeMu.Lock()
+		if messageType > 0 {
+			c.conn.WriteMessage(messageType, data)
+		}
 		c.conn.Close()
 		c.writeMu.Unlock()
 	}
@@ -148,6 +154,9 @@ func (c *Conn) Close() {
 // ReadPump reads messages from the WebSocket.
 func (c *Conn) ReadPump(handler func(env Envelope)) {
 	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("ws read pump panic", "recover", r, "conn_id", c.ID())
+		}
 		c.hub.Remove(c)
 		c.Close()
 	}()

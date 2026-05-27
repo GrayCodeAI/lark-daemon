@@ -41,6 +41,10 @@ func (s *Services) UpdateWorkspace(ctx context.Context, ws *proto.Workspace) err
 	return s.store.UpdateWorkspace(ctx, ws)
 }
 
+func (s *Services) DeleteWorkspace(ctx context.Context, id string) error {
+	return s.store.DeleteWorkspace(ctx, id)
+}
+
 // --- Members ---
 
 func (s *Services) CreateMember(ctx context.Context, m *proto.Member) error {
@@ -60,6 +64,10 @@ func (s *Services) GetMemberByName(ctx context.Context, workspaceID, name string
 
 func (s *Services) ListMembers(ctx context.Context, workspaceID string) ([]*proto.Member, error) {
 	return s.store.ListMembers(ctx, workspaceID)
+}
+
+func (s *Services) ListMembersPaginated(ctx context.Context, workspaceID string, limit, offset int) ([]*proto.Member, error) {
+	return s.store.ListMembersPaginated(ctx, workspaceID, limit, offset)
 }
 
 func (s *Services) UpdateMember(ctx context.Context, m *proto.Member) error {
@@ -82,6 +90,10 @@ func (s *Services) GetChannel(ctx context.Context, id string) (*proto.Channel, e
 
 func (s *Services) ListChannels(ctx context.Context, workspaceID string) ([]*proto.Channel, error) {
 	return s.store.ListChannels(ctx, workspaceID)
+}
+
+func (s *Services) ListChannelsPaginated(ctx context.Context, workspaceID string, limit, offset int) ([]*proto.Channel, error) {
+	return s.store.ListChannelsPaginated(ctx, workspaceID, limit, offset)
 }
 
 func (s *Services) UpdateChannel(ctx context.Context, ch *proto.Channel) error {

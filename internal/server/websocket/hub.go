@@ -34,16 +34,21 @@ type MessageBrief struct {
 // Hub manages all WebSocket connections.
 type Hub struct {
 	mu          sync.RWMutex
-	connections map[string]*Conn   // member ID -> Conn
-	agents      map[string]*Conn   // agent ID -> Conn (subset of connections)
-	presence    map[string]string  // member ID -> presence status
+	connections map[string]*Conn            // member ID -> Conn
+	agents      map[string]*Conn            // agent ID -> Conn (subset of connections)
+	agentNames  map[string]*Conn            // agent name -> Conn (O(1) name lookup)
+	channels    map[string]map[string]*Conn // channel ID -> member ID -> Conn
+	presence    map[string]string           // member ID -> presence status
 	store       StoreQuerier
+	onWake      func(agentID string) // callback for metrics recording
 }
 
 func NewHub() *Hub {
 	return &Hub{
 		connections: make(map[string]*Conn),
 		agents:      make(map[string]*Conn),
+		agentNames:  make(map[string]*Conn),
+		channels:    make(map[string]map[string]*Conn),
 		presence:    make(map[string]string),
 	}
 }
@@ -53,6 +58,13 @@ func (h *Hub) SetStore(s StoreQuerier) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.store = s
+}
+
+// SetWakeCallback sets a callback invoked when an agent is woken.
+func (h *Hub) SetWakeCallback(fn func(agentID string)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.onWake = fn
 }
 
 // Add registers a new connection and sets presence to online.
@@ -70,6 +82,7 @@ func (h *Hub) Add(c *Conn) {
 	h.connections[id] = c
 	if isAgent {
 		h.agents[id] = c
+		h.agentNames[name] = c
 	}
 	h.presence[id] = "online"
 	h.mu.Unlock()
@@ -82,15 +95,23 @@ func (h *Hub) Add(c *Conn) {
 // Remove unregisters a connection and sets presence to offline.
 func (h *Hub) Remove(c *Conn) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	id := c.ID()
 	name := c.Name()
 	isAgent := c.IsAgent()
 	delete(h.connections, id)
 	if isAgent {
 		delete(h.agents, id)
+		delete(h.agentNames, name)
+	}
+	// Remove from all channel subscriptions
+	for chID, cm := range h.channels {
+		delete(cm, id)
+		if len(cm) == 0 {
+			delete(h.channels, chID)
+		}
 	}
 	h.presence[id] = "offline"
+	h.mu.Unlock()
 	slog.Info("connection removed", "id", id, "name", name)
 }
 
@@ -126,31 +147,48 @@ func (h *Hub) GetAgent(agentID string) *Conn {
 	return h.agents[agentID]
 }
 
-// GetAgentByName looks up an agent connection by name.
+// GetAgentByName looks up an agent connection by name (O(1)).
 func (h *Hub) GetAgentByName(name string) *Conn {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	for _, c := range h.agents {
-		if c.Name() == name {
-			return c
-		}
-	}
-	return nil
+	return h.agentNames[name]
 }
 
-// BroadcastToChannel sends a message to all connections subscribed to a channel.
-// Snapshots the connection list under the lock to avoid holding it during Send.
+// SubscribeChannel adds a connection to a channel's subscriber list.
+func (h *Hub) SubscribeChannel(channelID string, c *Conn) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cm := h.channels[channelID]
+	if cm == nil {
+		cm = make(map[string]*Conn)
+		h.channels[channelID] = cm
+	}
+	cm[c.ID()] = c
+}
+
+// UnsubscribeChannel removes a connection from a channel's subscriber list.
+func (h *Hub) UnsubscribeChannel(channelID, memberID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if cm, ok := h.channels[channelID]; ok {
+		delete(cm, memberID)
+		if len(cm) == 0 {
+			delete(h.channels, channelID)
+		}
+	}
+}
+
+// BroadcastToChannel sends a message to all connections subscribed to a channel (O(1) lookup).
 func (h *Hub) BroadcastToChannel(channelID string, env Envelope) {
 	h.mu.RLock()
-	conns := make([]*Conn, 0, len(h.connections))
-	for _, c := range h.connections {
+	cm := h.channels[channelID]
+	conns := make([]*Conn, 0, len(cm))
+	for _, c := range cm {
 		conns = append(conns, c)
 	}
 	h.mu.RUnlock()
 	for _, c := range conns {
-		if c.IsSubscribed(channelID) {
-			c.Send(env)
-		}
+		c.Send(env)
 	}
 }
 
@@ -230,6 +268,9 @@ func (h *Hub) WakeAgentByName(name, channelID, reason string) {
 	}
 	env := NewEnvelope(EventAgentWake, data)
 	c.Send(env)
+	if h.onWake != nil {
+		h.onWake(c.ID())
+	}
 	slog.Info("agent woken by name", "name", name, "agent_id", c.ID(), "reason", reason)
 }
 
@@ -274,7 +315,6 @@ func (h *Hub) AgentCount() int {
 }
 
 // Close gracefully closes all WebSocket connections.
-// Snapshots and clears the maps under lock, then closes connections outside the lock.
 func (h *Hub) Close() {
 	h.mu.Lock()
 	conns := make([]*Conn, 0, len(h.connections))
@@ -283,10 +323,12 @@ func (h *Hub) Close() {
 	}
 	h.connections = make(map[string]*Conn)
 	h.agents = make(map[string]*Conn)
+	h.agentNames = make(map[string]*Conn)
+	h.channels = make(map[string]map[string]*Conn)
 	h.presence = make(map[string]string)
 	h.mu.Unlock()
 	for _, c := range conns {
-		c.Close()
+		c.CloseWithMessage(ws.CloseMessage, []byte(`{"type":"shutdown"}`))
 	}
 	slog.Info("hub closed, all connections dropped", "count", len(conns))
 }

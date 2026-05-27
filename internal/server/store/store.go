@@ -14,6 +14,7 @@ type Store interface {
 	GetWorkspaceBySlug(ctx context.Context, slug string) (*proto.Workspace, error)
 	ListWorkspaces(ctx context.Context) ([]*proto.Workspace, error)
 	UpdateWorkspace(ctx context.Context, ws *proto.Workspace) error
+	DeleteWorkspace(ctx context.Context, id string) error
 
 	// Member operations.
 	CreateMember(ctx context.Context, m *proto.Member) error
@@ -21,6 +22,7 @@ type Store interface {
 	GetMemberByAPIKey(ctx context.Context, key string) (*proto.Member, error)
 	GetMemberByName(ctx context.Context, workspaceID, name string) (*proto.Member, error)
 	ListMembers(ctx context.Context, workspaceID string) ([]*proto.Member, error)
+	ListMembersPaginated(ctx context.Context, workspaceID string, limit, offset int) ([]*proto.Member, error)
 	UpdateMember(ctx context.Context, m *proto.Member) error
 	UpdateMemberRoleCard(ctx context.Context, memberID string, roleCard *proto.RoleCard, runtime *proto.RuntimeInfo) error
 	DeleteMember(ctx context.Context, id string) error
@@ -29,6 +31,7 @@ type Store interface {
 	CreateChannel(ctx context.Context, ch *proto.Channel) error
 	GetChannel(ctx context.Context, id string) (*proto.Channel, error)
 	ListChannels(ctx context.Context, workspaceID string) ([]*proto.Channel, error)
+	ListChannelsPaginated(ctx context.Context, workspaceID string, limit, offset int) ([]*proto.Channel, error)
 	UpdateChannel(ctx context.Context, ch *proto.Channel) error
 	DeleteChannel(ctx context.Context, id string) error
 

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,10 +19,68 @@ import (
 	"github.com/go-chi/cors"
 
 	"lark/internal/proto"
+	"lark/internal/server/metrics"
 	"lark/internal/server/service"
 	"lark/internal/server/store"
 	"lark/internal/server/websocket"
 )
+
+// RateLimiter provides simple per-IP rate limiting.
+type RateLimiter struct {
+	mu      sync.Mutex
+	clients map[string]*clientBucket
+	limit   int
+}
+
+type clientBucket struct {
+	tokens    int
+	lastCheck time.Time
+}
+
+func NewRateLimiter(limit int) *RateLimiter {
+	return &RateLimiter{
+		clients: make(map[string]*clientBucket),
+		limit:   limit,
+	}
+}
+
+func (rl *RateLimiter) Allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	b, ok := rl.clients[ip]
+	if !ok {
+		b = &clientBucket{tokens: rl.limit, lastCheck: time.Now()}
+		rl.clients[ip] = b
+	}
+	elapsed := time.Since(b.lastCheck).Seconds()
+	b.lastCheck = time.Now()
+	b.tokens += int(elapsed)
+	if b.tokens > rl.limit {
+		b.tokens = rl.limit
+	}
+	if b.tokens <= 0 {
+		return false
+	}
+	b.tokens--
+	return true
+}
+
+// rateLimitMiddleware returns an HTTP handler that rate-limits per IP.
+func rateLimitMiddleware(rl *RateLimiter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := r.RemoteAddr
+			if idx := strings.LastIndex(ip, ":"); idx != -1 {
+				ip = ip[:idx]
+			}
+			if !rl.Allow(ip) {
+				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
 
 // Router wraps chi.Router with Lark-specific handlers.
 type Router struct {
@@ -34,10 +93,12 @@ type Router struct {
 	logger       *slog.Logger
 	corsOrigin   string
 	agentManager *websocket.AgentManager
+	collector    *metrics.Collector
+	rateLimiter  *RateLimiter
 }
 
 // NewRouter creates a new API router with all routes registered.
-func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore, corsOrigin string) *Router {
+func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore, corsOrigin string, collector *metrics.Collector, rl *RateLimiter) *Router {
 	r := &Router{
 		Router:       chi.NewRouter(),
 		services:     services,
@@ -48,6 +109,8 @@ func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, a
 		logger:       logger,
 		corsOrigin:   corsOrigin,
 		agentManager: websocket.NewAgentManager(hub, agentStore, logger),
+		collector:    collector,
+		rateLimiter:  rl,
 	}
 	r.setupMiddleware()
 	r.setupRoutes()
@@ -58,6 +121,7 @@ func (r *Router) setupMiddleware() {
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
+	r.Use(requestLoggerMiddleware(r.logger))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   []string{r.corsOrigin},
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
@@ -66,6 +130,25 @@ func (r *Router) setupMiddleware() {
 		AllowCredentials: false,
 		MaxAge:           300,
 	}))
+	r.Use(rateLimitMiddleware(r.rateLimiter))
+}
+
+// requestLoggerMiddleware logs every request with method, path, status, and duration.
+func requestLoggerMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+			next.ServeHTTP(ww, r)
+			logger.Info("request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", ww.Status(),
+				"bytes", ww.BytesWritten(),
+				"duration", time.Since(start).String(),
+			)
+		})
+	}
 }
 
 // authenticate middleware validates JWT or API key from the Authorization header.
@@ -149,12 +232,15 @@ func requireWorkspaceAuth(w http.ResponseWriter, req *http.Request, workspaceID 
 
 
 func (r *Router) setupRoutes() {
-	// Health check
+	// Health check — no rate limiting
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	r.Route("/v1", func(v1 chi.Router) {
+	r.Group(func(router chi.Router) {
+		router.Use(rateLimitMiddleware(r.rateLimiter))
+
+		router.Route("/v1", func(v1 chi.Router) {
 		// Unauthenticated bootstrap routes
 		v1.Post("/workspaces", r.handleCreateWorkspace)
 		v1.Post("/workspaces/{id}/agents", r.handleAgentProvision)
@@ -167,6 +253,7 @@ func (r *Router) setupRoutes() {
 			p.Get("/workspaces", r.handleListWorkspaces)
 			p.Get("/workspaces/{id}", r.handleGetWorkspace)
 			p.Patch("/workspaces/{id}", r.handleUpdateWorkspace)
+			p.Delete("/workspaces/{id}", r.handleDeleteWorkspace)
 
 			// Members
 			p.Post("/workspaces/{id}/members", r.handleCreateMember)
@@ -243,8 +330,9 @@ func (r *Router) setupRoutes() {
 		})
 	})
 
-	// WebSocket
-	r.Get("/ws", r.handleWebSocket)
+	// WebSocket (rate limited)
+	router.Get("/ws", r.handleWebSocket)
+	})
 }
 
 // --- Helpers ---
@@ -259,6 +347,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// decodeAndProtect decodes JSON into obj, then calls restore to revert protected fields.
+// Returns false and writes an error response if JSON decoding fails.
+func decodeAndProtect(w http.ResponseWriter, req *http.Request, obj interface{}, restore func()) bool {
+	if err := decodeJSON(req, obj); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return false
+	}
+	restore()
+	return true
 }
 
 // serverError logs the real error and sends a generic message to the client.
@@ -371,21 +470,43 @@ func (r *Router) handleUpdateWorkspace(w http.ResponseWriter, req *http.Request)
 		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
-	// Save protected fields before decode.
 	id := existing.ID
 	token := existing.AgentProvisionToken
-	if err := decodeJSON(req, existing); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeAndProtect(w, req, existing, func() {
+		existing.ID = id
+		existing.AgentProvisionToken = token
+	}) {
 		return
 	}
-	existing.ID = id
-	existing.AgentProvisionToken = token
 	if err := r.services.UpdateWorkspace(req.Context(), existing); err != nil {
 		serverError(w, err, "internal error")
 		return
 	}
 	existing.AgentProvisionToken = ""
 	writeJSON(w, http.StatusOK, existing)
+}
+
+func (r *Router) handleDeleteWorkspace(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	wsID := chi.URLParam(req, "id")
+	existing, err := r.services.GetWorkspace(req.Context(), wsID)
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if existing == nil || existing.ID != member.WorkspaceID {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if err := r.services.DeleteWorkspace(req.Context(), wsID); err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- Members ---
@@ -429,7 +550,16 @@ func (r *Router) handleListMembers(w http.ResponseWriter, req *http.Request) {
 	if requireWorkspaceAuth(w, req, chi.URLParam(req, "id")) == nil {
 		return
 	}
-	members, err := r.services.ListMembers(req.Context(), chi.URLParam(req, "id"))
+	workspaceID := chi.URLParam(req, "id")
+	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(req.URL.Query().Get("offset"))
+	var members []*proto.Member
+	var err error
+	if limit > 0 {
+		members, err = r.services.ListMembersPaginated(req.Context(), workspaceID, limit, offset)
+	} else {
+		members, err = r.services.ListMembers(req.Context(), workspaceID)
+	}
 	if err != nil {
 		serverError(w, err, "internal error")
 		return
@@ -544,19 +674,18 @@ func (r *Router) handleUpdateMember(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "member not found")
 		return
 	}
-	// Save protected fields before decode.
 	id := existing.ID
 	wsID := existing.WorkspaceID
 	mtype := existing.Type
 	apiKey := existing.APIKey
-	if err := decodeJSON(req, existing); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeAndProtect(w, req, existing, func() {
+		existing.ID = id
+		existing.WorkspaceID = wsID
+		existing.Type = mtype
+		existing.APIKey = apiKey
+	}) {
 		return
 	}
-	existing.ID = id
-	existing.WorkspaceID = wsID
-	existing.Type = mtype
-	existing.APIKey = apiKey
 	if err := r.services.UpdateMember(req.Context(), existing); err != nil {
 		serverError(w, err, "internal error")
 		return
@@ -633,7 +762,16 @@ func (r *Router) handleListChannels(w http.ResponseWriter, req *http.Request) {
 	if requireWorkspaceAuth(w, req, chi.URLParam(req, "id")) == nil {
 		return
 	}
-	channels, err := r.services.ListChannels(req.Context(), chi.URLParam(req, "id"))
+	workspaceID := chi.URLParam(req, "id")
+	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
+	offset, _ := strconv.Atoi(req.URL.Query().Get("offset"))
+	var channels []*proto.Channel
+	var err error
+	if limit > 0 {
+		channels, err = r.services.ListChannelsPaginated(req.Context(), workspaceID, limit, offset)
+	} else {
+		channels, err = r.services.ListChannels(req.Context(), workspaceID)
+	}
 	if err != nil {
 		serverError(w, err, "internal error")
 		return
@@ -669,17 +807,16 @@ func (r *Router) handleUpdateChannel(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "channel not found")
 		return
 	}
-	// Save protected fields before decode.
 	id := existing.ID
 	wsID := existing.WorkspaceID
 	chType := existing.Type
-	if err := decodeJSON(req, existing); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeAndProtect(w, req, existing, func() {
+		existing.ID = id
+		existing.WorkspaceID = wsID
+		existing.Type = chType
+	}) {
 		return
 	}
-	existing.ID = id
-	existing.WorkspaceID = wsID
-	existing.Type = chType
 	if err := r.services.UpdateChannel(req.Context(), existing); err != nil {
 		serverError(w, err, "internal error")
 		return
@@ -742,6 +879,7 @@ func (r *Router) handleRemoveChannelMember(w http.ResponseWriter, req *http.Requ
 	if c := r.hub.GetConn(memberID); c != nil {
 		c.Unsubscribe(channelID)
 	}
+	r.hub.UnsubscribeChannel(channelID, memberID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -847,19 +985,18 @@ func (r *Router) handleUpdateMessage(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusForbidden, "not message author")
 		return
 	}
-	// Save protected fields before decode.
 	id := existing.ID
 	channelID := existing.ChannelID
 	senderID := existing.SenderID
 	createdAt := existing.CreatedAt
-	if err := decodeJSON(req, existing); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeAndProtect(w, req, existing, func() {
+		existing.ID = id
+		existing.ChannelID = channelID
+		existing.SenderID = senderID
+		existing.CreatedAt = createdAt
+	}) {
 		return
 	}
-	existing.ID = id
-	existing.ChannelID = channelID
-	existing.SenderID = senderID
-	existing.CreatedAt = createdAt
 	if err := r.services.UpdateMessage(req.Context(), existing); err != nil {
 		serverError(w, err, "internal error")
 		return
@@ -1077,19 +1214,18 @@ func (r *Router) handleUpdateTask(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
-	// Save protected fields before decode.
 	id := existing.ID
 	wsID := existing.WorkspaceID
 	createdBy := existing.CreatedBy
 	createdAt := existing.CreatedAt
-	if err := decodeJSON(req, existing); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeAndProtect(w, req, existing, func() {
+		existing.ID = id
+		existing.WorkspaceID = wsID
+		existing.CreatedBy = createdBy
+		existing.CreatedAt = createdAt
+	}) {
 		return
 	}
-	existing.ID = id
-	existing.WorkspaceID = wsID
-	existing.CreatedBy = createdBy
-	existing.CreatedAt = createdAt
 	if err := r.services.UpdateTask(req.Context(), existing); err != nil {
 		serverError(w, err, "internal error")
 		return
@@ -1360,7 +1496,9 @@ func (r *Router) subscribeMemberChannels(c *websocket.Conn, memberID string) {
 		return
 	}
 	for _, id := range channelIDs {
-		_ = c.Subscribe(id) // best-effort during auto-subscribe
+		if c.Subscribe(id) {
+			r.hub.SubscribeChannel(id, c)
+		}
 	}
 }
 
@@ -1386,6 +1524,7 @@ func (r *Router) handleWSChannelJoin(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "subscription limit reached"}))
 		return
 	}
+	r.hub.SubscribeChannel(data.ChannelID, c)
 	c.Send(websocket.NewEnvelope(websocket.EventChannelJoin, map[string]string{"channel_id": data.ChannelID}))
 }
 
@@ -1402,6 +1541,7 @@ func (r *Router) handleWSChannelLeave(c *websocket.Conn, env websocket.Envelope)
 		return
 	}
 	c.Unsubscribe(data.ChannelID)
+	r.hub.UnsubscribeChannel(data.ChannelID, c.ID())
 	c.Send(websocket.NewEnvelope(websocket.EventChannelLeave, map[string]string{"channel_id": data.ChannelID}))
 }
 
@@ -1878,11 +2018,16 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		serverError(w, err, "failed to write file")
 		return
 	}
-	// Detect MIME type
-	buf := make([]byte, 512)
-	dst.Seek(0, 0)
-	n, _ := dst.Read(buf)
-	mimeType := http.DetectContentType(buf[:n])
+	// Detect MIME type: prefer Content-Type header, fallback to sniff
+	mimeType := header.Header.Get("Content-Type")
+	if mimeType == "" || mimeType == "application/octet-stream" {
+		buf := make([]byte, 512)
+		dst.Seek(0, 0)
+		n, _ := dst.Read(buf)
+		if n > 0 {
+			mimeType = http.DetectContentType(buf[:n])
+		}
+	}
 	// Save to DB
 	f := &proto.File{
 		ID:          fID,

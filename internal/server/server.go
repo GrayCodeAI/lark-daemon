@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"lark/internal/server/api"
+	"lark/internal/server/metrics"
 	"lark/internal/server/service"
 	"lark/internal/server/store"
 	"lark/internal/server/websocket"
@@ -20,13 +21,16 @@ import (
 
 // Server is the main Lark server.
 type Server struct {
-	config   *Config
-	store    store.Store
-	hub      *websocket.Hub
-	router   *api.Router
-	services *service.Services
-	logger   *slog.Logger
+	config    *Config
+	store     store.Store
+	hub       *websocket.Hub
+	router    *api.Router
+	services  *service.Services
+	logger    *slog.Logger
+	collector *metrics.Collector
 }
+
+
 
 // New creates a new Server.
 func New(cfg Config) (*Server, error) {
@@ -53,15 +57,23 @@ func New(cfg Config) (*Server, error) {
 	hubAdapter := NewHubStoreAdapter(db)
 	hub.SetStore(hubAdapter)
 	auth := websocket.NewAuthService(cfg.JWTSecret)
-	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin)
+	collector := metrics.NewCollector(db)
+	rl := api.NewRateLimiter(cfg.RateLimit)
+	hub.SetWakeCallback(func(agentID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		collector.RecordWake(ctx, agentID)
+	})
+	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin, collector, rl)
 
 	return &Server{
-		config:   &cfg,
-		store:    db,
-		hub:      hub,
-		router:   router,
-		services: services,
-		logger:   logger,
+		config:    &cfg,
+		store:     db,
+		hub:       hub,
+		router:    router,
+		services:  services,
+		logger:    logger,
+		collector: collector,
 	}, nil
 }
 
@@ -85,7 +97,14 @@ func (s *Server) Run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if s.config.TLSCert != "" && s.config.TLSKey != "" {
+			s.logger.Info("starting with TLS", "cert", s.config.TLSCert)
+			err = srv.ListenAndServeTLS(s.config.TLSCert, s.config.TLSKey)
+		} else {
+			err = srv.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 		close(errCh)

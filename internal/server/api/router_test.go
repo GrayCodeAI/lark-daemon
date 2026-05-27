@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"lark/internal/proto"
+	"lark/internal/server/metrics"
 	"lark/internal/server/service"
 	"lark/internal/server/store"
 	"lark/internal/server/websocket"
@@ -39,8 +40,10 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	// HubAdapter for websocket.AgentStore
 	ha := &hubAdapter{store: st}
+	collector := metrics.NewCollector(st)
+	rl := NewRateLimiter(1000) // high limit for tests
 
-	router := NewRouter(svc, st, hub, auth, logger, ha, "*")
+	router := NewRouter(svc, st, hub, auth, logger, ha, "*", collector, rl)
 	ts := httptest.NewServer(router)
 	t.Cleanup(ts.Close)
 
