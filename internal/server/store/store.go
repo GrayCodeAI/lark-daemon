@@ -20,6 +20,7 @@ type Store interface {
 	CreateMember(ctx context.Context, m *proto.Member) error
 	GetMember(ctx context.Context, id string) (*proto.Member, error)
 	GetMemberByAPIKey(ctx context.Context, key string) (*proto.Member, error)
+	GetMemberByEmail(ctx context.Context, email string) (*proto.Member, error)
 	GetMemberByName(ctx context.Context, workspaceID, name string) (*proto.Member, error)
 	ListMembers(ctx context.Context, workspaceID string) ([]*proto.Member, error)
 	ListMembersPaginated(ctx context.Context, workspaceID string, limit, offset int) ([]*proto.Member, error)

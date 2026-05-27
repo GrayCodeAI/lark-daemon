@@ -17,6 +17,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 
 	"lark-daemon/internal/proto"
 	"lark-daemon/internal/server/metrics"
@@ -257,6 +259,8 @@ func (r *Router) setupRoutes() {
 
 		router.Route("/v1", func(v1 chi.Router) {
 		// Unauthenticated bootstrap routes
+		v1.Post("/auth/register", r.handleRegister)
+		v1.Post("/auth/login", r.handleLogin)
 		v1.Post("/workspaces", r.handleCreateWorkspace)
 		v1.Post("/workspaces/{id}/agents", r.handleAgentProvision)
 
@@ -440,6 +444,103 @@ func cacheControlMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+
+// --- Auth handlers ---
+
+func (r *Router) handleRegister(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Name     string `json:"name"`
+	}
+	if err := decodeJSON(req, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Email == "" || body.Password == "" || body.Name == "" {
+		writeError(w, http.StatusBadRequest, "email, password, and name required")
+		return
+	}
+	if len(body.Password) < 6 {
+		writeError(w, http.StatusBadRequest, "password must be at least 6 characters")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
+	if err != nil {
+		serverError(w, err, "password hash failed")
+		return
+	}
+	// Create a personal workspace for the user
+	ws := &proto.Workspace{
+		Name: body.Name + "'s Workspace",
+		Slug: strings.ToLower(strings.ReplaceAll(body.Name, " ", "-")) + "-" + uuid.New().String()[:8],
+	}
+	if err := r.services.CreateWorkspace(req.Context(), ws); err != nil {
+		serverError(w, err, "create workspace failed")
+		return
+	}
+	m := &proto.Member{
+		WorkspaceID:  ws.ID,
+		Name:         body.Name,
+		Email:        body.Email,
+		PasswordHash: string(hash),
+		Type:         proto.MemberHuman,
+		Status:       proto.PresenceOffline,
+	}
+	if err := r.services.CreateMember(req.Context(), m); err != nil {
+		serverError(w, err, "create member failed")
+		return
+	}
+	token, err := r.auth.GenerateToken(m.ID, ws.ID)
+	if err != nil {
+		serverError(w, err, "generate token failed")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"token":      token,
+		"member_id":  m.ID,
+		"workspace":  ws,
+	})
+}
+
+func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
+	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(req, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Email == "" || body.Password == "" {
+		writeError(w, http.StatusBadRequest, "email and password required")
+		return
+	}
+	member, err := r.store.GetMemberByEmail(req.Context(), body.Email)
+	if err != nil {
+		serverError(w, err, "login failed")
+		return
+	}
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "invalid email or password")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(member.PasswordHash), []byte(body.Password)); err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid email or password")
+		return
+	}
+	token, err := r.auth.GenerateToken(member.ID, member.WorkspaceID)
+	if err != nil {
+		serverError(w, err, "generate token failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":      token,
+		"member_id":  member.ID,
+		"workspace_id": member.WorkspaceID,
+		"name":       member.Name,
+	})
+}
 
 // --- Workspaces ---
 

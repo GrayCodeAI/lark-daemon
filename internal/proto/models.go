@@ -74,6 +74,8 @@ type Member struct {
 	ID           string       `json:"id"`
 	WorkspaceID  string       `json:"workspace_id"`
 	Name         string       `json:"name"`
+	Email        string       `json:"email,omitempty"`
+	PasswordHash string       `json:"-"`
 	Type         MemberType   `json:"type"`
 	AvatarURL    string       `json:"avatar_url,omitempty"`
 	Status       Presence     `json:"status"`

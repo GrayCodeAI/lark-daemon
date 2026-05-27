@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS members (
     id TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
+    email TEXT,
+    password_hash TEXT,
     type TEXT NOT NULL CHECK (type IN ('human', 'agent')),
     avatar_url TEXT,
     status TEXT DEFAULT 'offline',

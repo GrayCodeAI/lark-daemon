@@ -34,6 +34,13 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// Migration: add email/password_hash columns to members table if missing
+	for _, m := range []string{
+		`ALTER TABLE members ADD COLUMN email TEXT`,
+		`ALTER TABLE members ADD COLUMN password_hash TEXT`,
+	} {
+		db.Exec(m) // ignore error if column already exists
+	}
 	// Rebuild FTS index to ensure consistency after any VACUUM
 	// that may have changed implicit rowids.
 	if _, err := db.Exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`); err != nil {
@@ -153,29 +160,43 @@ func (s *SQLiteStore) CreateMember(ctx context.Context, m *proto.Member) error {
 	if m.APIKey != "" {
 		apiKey = m.APIKey
 	}
+	var email interface{}
+	if m.Email != "" {
+		email = m.Email
+	}
+	var pwHash interface{}
+	if m.PasswordHash != "" {
+		pwHash = m.PasswordHash
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO members (id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.WorkspaceID, m.Name, string(m.Type), m.AvatarURL, string(m.Status),
+		`INSERT INTO members (id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.WorkspaceID, m.Name, email, pwHash, string(m.Type), m.AvatarURL, string(m.Status),
 		apiKey, roleCard, caps, runtime, m.CreatedAt, m.UpdatedAt)
 	return err
 }
 
 func (s *SQLiteStore) GetMember(ctx context.Context, id string) (*proto.Member, error) {
 	return s.queryMember(ctx,
-		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE id = ?`, id)
 }
 
 func (s *SQLiteStore) GetMemberByAPIKey(ctx context.Context, key string) (*proto.Member, error) {
 	return s.queryMember(ctx,
-		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE api_key = ?`, key)
+}
+
+func (s *SQLiteStore) GetMemberByEmail(ctx context.Context, email string) (*proto.Member, error) {
+	return s.queryMember(ctx,
+		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		 FROM members WHERE email = ?`, email)
 }
 
 func (s *SQLiteStore) GetMemberByName(ctx context.Context, workspaceID, name string) (*proto.Member, error) {
 	return s.queryMember(ctx,
-		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE workspace_id = ? AND name = ?`, workspaceID, name)
 }
 
@@ -183,9 +204,10 @@ func (s *SQLiteStore) queryMember(ctx context.Context, query string, args ...any
 	m := &proto.Member{}
 	var memberType, status string
 	var apiKey sql.NullString
+	var email, passwordHash sql.NullString
 	var roleCard, caps, runtime []byte
 	err := s.db.QueryRowContext(ctx, query, args...).
-		Scan(&m.ID, &m.WorkspaceID, &m.Name, &memberType, &m.AvatarURL, &status,
+		Scan(&m.ID, &m.WorkspaceID, &m.Name, &email, &passwordHash, &memberType, &m.AvatarURL, &status,
 			&apiKey, &roleCard, &caps, &runtime, &m.CreatedAt, &m.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -193,6 +215,8 @@ func (s *SQLiteStore) queryMember(ctx context.Context, query string, args ...any
 	if err != nil {
 		return nil, err
 	}
+	m.Email = email.String
+	m.PasswordHash = passwordHash.String
 	m.APIKey = apiKey.String
 	m.Type = proto.MemberType(memberType)
 	m.Status = proto.Presence(status)
@@ -231,7 +255,7 @@ func (s *SQLiteStore) UpdateMemberRoleCard(ctx context.Context, memberID string,
 
 func (s *SQLiteStore) ListMembers(ctx context.Context, workspaceID string) ([]*proto.Member, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE workspace_id = ? ORDER BY name`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -248,7 +272,7 @@ func (s *SQLiteStore) ListMembersPaginated(ctx context.Context, workspaceID stri
 		offset = 0
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE workspace_id = ? ORDER BY name LIMIT ? OFFSET ?`, workspaceID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -263,11 +287,14 @@ func scanMembers(rows *sql.Rows) ([]*proto.Member, error) {
 		m := &proto.Member{}
 		var memberType, status string
 		var apiKey sql.NullString
+		var email, passwordHash sql.NullString
 		var roleCard, caps, runtime []byte
-		if err := rows.Scan(&m.ID, &m.WorkspaceID, &m.Name, &memberType, &m.AvatarURL, &status,
+		if err := rows.Scan(&m.ID, &m.WorkspaceID, &m.Name, &email, &passwordHash, &memberType, &m.AvatarURL, &status,
 			&apiKey, &roleCard, &caps, &runtime, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
+		m.Email = email.String
+		m.PasswordHash = passwordHash.String
 		m.APIKey = apiKey.String
 		m.Type = proto.MemberType(memberType)
 		m.Status = proto.Presence(status)
@@ -438,7 +465,7 @@ func (s *SQLiteStore) RemoveChannelMember(ctx context.Context, channelID, member
 
 func (s *SQLiteStore) ListChannelMembers(ctx context.Context, channelID string) ([]*proto.Member, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT m.id, m.workspace_id, m.name, m.type, m.avatar_url, m.status, m.api_key, m.role_card, m.capabilities, m.runtime_info, m.created_at, m.updated_at
+		`SELECT m.id, m.workspace_id, m.name, m.email, m.password_hash, m.type, m.avatar_url, m.status, m.api_key, m.role_card, m.capabilities, m.runtime_info, m.created_at, m.updated_at
 		 FROM members m JOIN channel_members cm ON m.id = cm.member_id
 		 WHERE cm.channel_id = ? ORDER BY m.name`, channelID)
 	if err != nil {
