@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS channels (
     type TEXT NOT NULL CHECK (type IN ('channel', 'dm', 'group_dm')),
     topic TEXT,
     is_private INTEGER DEFAULT 0,
+    is_archived INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS messages (
     sender_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     thread_id TEXT REFERENCES messages(id),
     content TEXT NOT NULL,
+    file_id TEXT,
     type TEXT DEFAULT 'text',
     metadata TEXT,
     created_at INTEGER NOT NULL,

@@ -38,6 +38,8 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	for _, m := range []string{
 		`ALTER TABLE members ADD COLUMN email TEXT`,
 		`ALTER TABLE members ADD COLUMN password_hash TEXT`,
+		`ALTER TABLE messages ADD COLUMN file_id TEXT`,
+		`ALTER TABLE channels ADD COLUMN is_archived INTEGER DEFAULT 0`,
 	} {
 		db.Exec(m) // ignore error if column already exists
 	}
@@ -360,21 +362,25 @@ func (s *SQLiteStore) CreateChannel(ctx context.Context, ch *proto.Channel) erro
 	if ch.IsPrivate {
 		private = 1
 	}
+	archived := 0
+	if ch.IsArchived {
+		archived = 1
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO channels (id, workspace_id, name, type, topic, is_private, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		ch.ID, ch.WorkspaceID, ch.Name, string(ch.Type), ch.Topic, private, ch.CreatedAt, ch.UpdatedAt)
+		`INSERT INTO channels (id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ch.ID, ch.WorkspaceID, ch.Name, string(ch.Type), ch.Topic, private, archived, ch.CreatedAt, ch.UpdatedAt)
 	return err
 }
 
 func (s *SQLiteStore) GetChannel(ctx context.Context, id string) (*proto.Channel, error) {
 	ch := &proto.Channel{}
 	var chType string
-	var private int
+	var private, archived int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workspace_id, name, type, topic, is_private, created_at, updated_at
+		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at
 		 FROM channels WHERE id = ?`, id).
-		Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &chType, &ch.Topic, &private, &ch.CreatedAt, &ch.UpdatedAt)
+		Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &chType, &ch.Topic, &private, &archived, &ch.CreatedAt, &ch.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -383,12 +389,13 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, id string) (*proto.Channel
 	}
 	ch.Type = proto.ChannelType(chType)
 	ch.IsPrivate = private == 1
+	ch.IsArchived = archived == 1
 	return ch, nil
 }
 
 func (s *SQLiteStore) ListChannels(ctx context.Context, workspaceID string) ([]*proto.Channel, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, type, topic, is_private, created_at, updated_at
+		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at
 		 FROM channels WHERE workspace_id = ? ORDER BY name LIMIT 200`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -405,7 +412,7 @@ func (s *SQLiteStore) ListChannelsPaginated(ctx context.Context, workspaceID str
 		offset = 0
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, type, topic, is_private, created_at, updated_at
+		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at
 		 FROM channels WHERE workspace_id = ? ORDER BY name LIMIT ? OFFSET ?`, workspaceID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -419,12 +426,13 @@ func scanChannels(rows *sql.Rows) ([]*proto.Channel, error) {
 	for rows.Next() {
 		ch := &proto.Channel{}
 		var chType string
-		var private int
-		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &chType, &ch.Topic, &private, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		var private, archived int
+		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &chType, &ch.Topic, &private, &archived, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 			return nil, err
 		}
 		ch.Type = proto.ChannelType(chType)
 		ch.IsPrivate = private == 1
+		ch.IsArchived = archived == 1
 		out = append(out, ch)
 	}
 	return out, rows.Err()
@@ -436,9 +444,13 @@ func (s *SQLiteStore) UpdateChannel(ctx context.Context, ch *proto.Channel) erro
 	if ch.IsPrivate {
 		private = 1
 	}
+	archived := 0
+	if ch.IsArchived {
+		archived = 1
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE channels SET name=?, topic=?, is_private=?, updated_at=? WHERE id=?`,
-		ch.Name, ch.Topic, private, ch.UpdatedAt, ch.ID)
+		`UPDATE channels SET name=?, topic=?, is_private=?, is_archived=?, updated_at=? WHERE id=?`,
+		ch.Name, ch.Topic, private, archived, ch.UpdatedAt, ch.ID)
 	return err
 }
 
@@ -1061,7 +1073,7 @@ func (s *SQLiteStore) GetDMChannel(ctx context.Context, workspaceID string, memb
 
 func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*proto.Channel, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT c.id, c.workspace_id, c.name, c.type, c.topic, c.is_private, c.created_at, c.updated_at
+		`SELECT c.id, c.workspace_id, c.name, c.type, c.topic, c.is_private, c.is_archived, c.created_at, c.updated_at
 		 FROM channels c JOIN channel_members cm ON c.id = cm.channel_id
 		 WHERE cm.member_id = ? AND c.type IN ('dm', 'group_dm')
 		 ORDER BY c.updated_at DESC LIMIT 200`,
@@ -1074,8 +1086,8 @@ func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*p
 	for rows.Next() {
 		ch := &proto.Channel{}
 		var topic, name sql.NullString
-		var private int
-		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &name, &ch.Type, &topic, &private, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		var private, archived int
+		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &name, &ch.Type, &topic, &private, &archived, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 			return nil, err
 		}
 		ch.Name = name.String
@@ -1129,7 +1141,7 @@ func (s *SQLiteStore) createDMChannel(ctx context.Context, ch *proto.Channel, me
 	ch.UpdatedAt = ch.CreatedAt
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO channels (id, workspace_id, name, type, is_private, created_at, updated_at)
+		`INSERT INTO channels (id, workspace_id, name, type, is_private, is_archived, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, 1, ?, ?)`,
 		ch.ID, ch.WorkspaceID, ch.Name, ch.Type, ch.CreatedAt, ch.UpdatedAt)
 	if err != nil {

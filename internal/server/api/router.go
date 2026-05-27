@@ -293,6 +293,8 @@ func (r *Router) setupRoutes() {
 			p.Get("/workspaces/{id}/channels/{channelID}", r.handleGetChannel)
 			p.Patch("/workspaces/{id}/channels/{channelID}", r.handleUpdateChannel)
 			p.Delete("/workspaces/{id}/channels/{channelID}", r.handleDeleteChannel)
+			p.Post("/workspaces/{id}/channels/{channelID}/archive", r.handleArchiveChannel)
+			p.Post("/workspaces/{id}/channels/{channelID}/unarchive", r.handleUnarchiveChannel)
 			p.Post("/workspaces/{id}/channels/{channelID}/members", r.handleAddChannelMember)
 			p.Delete("/workspaces/{id}/channels/{channelID}/members/{memberID}", r.handleRemoveChannelMember)
 
@@ -318,6 +320,9 @@ func (r *Router) setupRoutes() {
 			p.Get("/workspaces/{id}/tasks", r.handleListTasks)
 			p.Patch("/tasks/{id}", r.handleUpdateTask)
 			p.Delete("/tasks/{id}", r.handleDeleteTask)
+
+			// Agents
+			p.Get("/workspaces/{id}/agents", r.handleListAgents)
 
 			// Agent memory
 			p.Post("/agents/{id}/memory", r.handleSetMemory)
@@ -2432,6 +2437,79 @@ func (r *Router) handleMarkRead(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Agent discovery ---
+
+func (r *Router) handleListAgents(w http.ResponseWriter, req *http.Request) {
+	if requireWorkspaceAuth(w, req, chi.URLParam(req, "id")) == nil {
+		return
+	}
+	members, err := r.services.ListMembers(req.Context(), chi.URLParam(req, "id"))
+	if err != nil {
+		serverError(w, err, "list agents failed")
+		return
+	}
+	agents := make([]map[string]any, 0)
+	for _, m := range members {
+		if m.Type == proto.MemberAgent {
+			agents = append(agents, map[string]any{
+				"id":       m.ID,
+				"name":     m.Name,
+				"status":   m.Status,
+				"online":   r.hub.GetAgent(m.ID) != nil,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, agents)
+}
+
+// --- Channel archive ---
+
+func (r *Router) handleArchiveChannel(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	ch, err := r.services.GetChannel(req.Context(), chi.URLParam(req, "channelID"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if ch == nil || ch.WorkspaceID != member.WorkspaceID {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	ch.IsArchived = true
+	if err := r.services.UpdateChannel(req.Context(), ch); err != nil {
+		serverError(w, err, "archive failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, ch)
+}
+
+func (r *Router) handleUnarchiveChannel(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	ch, err := r.services.GetChannel(req.Context(), chi.URLParam(req, "channelID"))
+	if err != nil {
+		serverError(w, err, "internal error")
+		return
+	}
+	if ch == nil || ch.WorkspaceID != member.WorkspaceID {
+		writeError(w, http.StatusNotFound, "channel not found")
+		return
+	}
+	ch.IsArchived = false
+	if err := r.services.UpdateChannel(req.Context(), ch); err != nil {
+		serverError(w, err, "unarchive failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, ch)
 }
 
 // --- Webhook handlers ---

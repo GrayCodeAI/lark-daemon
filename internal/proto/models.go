@@ -95,6 +95,7 @@ type Channel struct {
 	Type        ChannelType `json:"type"`
 	Topic       string      `json:"topic,omitempty"`
 	IsPrivate   bool        `json:"is_private"`
+	IsArchived  bool        `json:"is_archived,omitempty"`
 	CreatedAt   int64       `json:"created_at"`
 	UpdatedAt   int64       `json:"updated_at"`
 }
@@ -114,6 +115,7 @@ type Message struct {
 	SenderID  string          `json:"sender_id"`
 	ThreadID  string          `json:"thread_id,omitempty"`
 	Content   string          `json:"content"`
+	FileID    string          `json:"file_id,omitempty"`
 	Type      string          `json:"type"`
 	Metadata  json.RawMessage `json:"metadata,omitempty"`
 	CreatedAt int64           `json:"created_at"`
