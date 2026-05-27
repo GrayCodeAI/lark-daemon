@@ -1453,7 +1453,7 @@ func (r *Router) handleWSAuthLogin(c *websocket.Conn, env websocket.Envelope) {
 	claims, err := r.auth.ValidateToken(data.Token)
 	if err != nil {
 		// Try as API key
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
 		defer cancel()
 		member, err := r.store.GetMemberByAPIKey(ctx, data.Token)
 		if err != nil {
@@ -1482,7 +1482,7 @@ func (r *Router) handleWSAuthLogin(c *websocket.Conn, env websocket.Envelope) {
 	}
 
 	// JWT auth
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
 	defer cancel()
 	member, err := r.store.GetMember(ctx, claims.MemberID)
 	if err != nil {
@@ -1510,7 +1510,7 @@ func (r *Router) handleWSAuthLogin(c *websocket.Conn, env websocket.Envelope) {
 }
 
 func (r *Router) subscribeMemberChannels(c *websocket.Conn, memberID string) {
-	channelIDs, err := r.store.ListMemberChannelIDs(context.Background(), memberID)
+	channelIDs, err := r.store.ListMemberChannelIDs(c.Context(), memberID)
 	if err != nil {
 		return
 	}
@@ -1534,7 +1534,7 @@ func (r *Router) handleWSChannelJoin(c *websocket.Conn, env websocket.Envelope) 
 		return
 	}
 	// Verify membership
-	isMember, err := r.store.IsChannelMember(context.Background(), data.ChannelID, c.ID())
+	isMember, err := r.store.IsChannelMember(c.Context(), data.ChannelID, c.ID())
 	if err != nil || !isMember {
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not a channel member"}))
 		return
@@ -1594,7 +1594,7 @@ func (r *Router) handleWSMessageSend(c *websocket.Conn, env websocket.Envelope) 
 		ThreadID:  data.ThreadID,
 		Type:      data.Type,
 	}
-	if err := r.services.CreateMessage(context.Background(), msg); err != nil {
+	if err := r.services.CreateMessage(c.Context(), msg); err != nil {
 		wsError(c, err, "ws create message failed")
 		return
 	}
@@ -1636,7 +1636,7 @@ func (r *Router) handleWSMessageEdit(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content too long (max 10000 characters)"}))
 		return
 	}
-	msg, err := r.services.GetMessage(context.Background(), data.MessageID)
+	msg, err := r.services.GetMessage(c.Context(), data.MessageID)
 	if err != nil {
 		wsError(c, err, "ws message edit: get message failed")
 		return
@@ -1650,7 +1650,7 @@ func (r *Router) handleWSMessageEdit(c *websocket.Conn, env websocket.Envelope) 
 		return
 	}
 	msg.Content = data.Content
-	if err := r.services.UpdateMessage(context.Background(), msg); err != nil {
+	if err := r.services.UpdateMessage(c.Context(), msg); err != nil {
 		wsError(c, err, "ws update message failed")
 		return
 	}
@@ -1670,7 +1670,7 @@ func (r *Router) handleWSMessageDelete(c *websocket.Conn, env websocket.Envelope
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid data"}))
 		return
 	}
-	msg, err := r.services.GetMessage(context.Background(), data.MessageID)
+	msg, err := r.services.GetMessage(c.Context(), data.MessageID)
 	if err != nil {
 		wsError(c, err, "ws message delete: get message failed")
 		return
@@ -1683,7 +1683,7 @@ func (r *Router) handleWSMessageDelete(c *websocket.Conn, env websocket.Envelope
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not message author"}))
 		return
 	}
-	if err := r.services.DeleteMessage(context.Background(), data.MessageID); err != nil {
+	if err := r.services.DeleteMessage(c.Context(), data.MessageID); err != nil {
 		wsError(c, err, "ws delete message failed")
 		return
 	}
@@ -1825,7 +1825,7 @@ func (r *Router) handleWSApprovalRequest(c *websocket.Conn, env websocket.Envelo
 		Payload:   data.Payload,
 	}
 	// We need workspace_id — get from agent's member record
-	member, err := r.services.GetMember(context.Background(), c.ID())
+	member, err := r.services.GetMember(c.Context(), c.ID())
 	if err != nil {
 		wsError(c, err, "ws approval: get member failed")
 		return
@@ -1835,7 +1835,7 @@ func (r *Router) handleWSApprovalRequest(c *websocket.Conn, env websocket.Envelo
 		return
 	}
 	a.WorkspaceID = member.WorkspaceID
-	if err := r.services.CreateApproval(context.Background(), a); err != nil {
+	if err := r.services.CreateApproval(c.Context(), a); err != nil {
 		wsError(c, err, "ws create approval failed")
 		return
 	}
@@ -1897,7 +1897,7 @@ func (r *Router) handleWSTypingStart(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid data"}))
 		return
 	}
-	isMember, err := r.store.IsChannelMember(context.Background(), data.ChannelID, c.ID())
+	isMember, err := r.store.IsChannelMember(c.Context(), data.ChannelID, c.ID())
 	if err != nil {
 		r.logger.Error("typing start: check membership", "err", err)
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
@@ -1926,7 +1926,7 @@ func (r *Router) handleWSTypingStop(c *websocket.Conn, env websocket.Envelope) {
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid data"}))
 		return
 	}
-	isMember, err := r.store.IsChannelMember(context.Background(), data.ChannelID, c.ID())
+	isMember, err := r.store.IsChannelMember(c.Context(), data.ChannelID, c.ID())
 	if err != nil {
 		r.logger.Error("typing stop: check membership", "err", err)
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
@@ -1964,7 +1964,7 @@ func (r *Router) handleWSThreadReply(c *websocket.Conn, env websocket.Envelope) 
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "content too long (max 10000 characters)"}))
 		return
 	}
-	isMember, err := r.store.IsChannelMember(context.Background(), data.ChannelID, c.ID())
+	isMember, err := r.store.IsChannelMember(c.Context(), data.ChannelID, c.ID())
 	if err != nil {
 		r.logger.Error("thread reply: check membership", "err", err)
 		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
@@ -1980,7 +1980,7 @@ func (r *Router) handleWSThreadReply(c *websocket.Conn, env websocket.Envelope) 
 		Content:   data.Content,
 		ThreadID:  data.ParentID,
 	}
-	if err := r.services.CreateMessage(context.Background(), msg); err != nil {
+	if err := r.services.CreateMessage(c.Context(), msg); err != nil {
 		wsError(c, err, "ws create thread reply failed")
 		return
 	}

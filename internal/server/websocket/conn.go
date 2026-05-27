@@ -1,6 +1,7 @@
 package websocket
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"sync"
@@ -27,9 +28,12 @@ type Conn struct {
 	send          chan []byte
 	hub           *Hub
 	closed        bool
+	ctx           context.Context
+	cancel        context.CancelFunc
 }
 
 func NewConn(hub *Hub, conn *ws.Conn, id, name string, isAgent bool) *Conn {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Conn{
 		conn:     conn,
 		id:       id,
@@ -38,7 +42,14 @@ func NewConn(hub *Hub, conn *ws.Conn, id, name string, isAgent bool) *Conn {
 		channels: make(map[string]bool),
 		send:     make(chan []byte, 256),
 		hub:      hub,
+		ctx:      ctx,
+		cancel:   cancel,
 	}
+}
+
+// Context returns a context that is cancelled when the connection closes.
+func (c *Conn) Context() context.Context {
+	return c.ctx
 }
 
 // ID returns the member ID.
@@ -147,6 +158,9 @@ func (c *Conn) CloseWithMessage(messageType int, data []byte) {
 	c.closed = true
 	close(c.send)
 	c.mu.Unlock()
+	if c.cancel != nil {
+		c.cancel()
+	}
 	if c.conn != nil {
 		c.writeMu.Lock()
 		if messageType > 0 {

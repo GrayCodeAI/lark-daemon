@@ -13,6 +13,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const maxRetries = 3
+
 type SQLiteStore struct {
 	db *sql.DB
 }
@@ -91,7 +93,7 @@ func (s *SQLiteStore) GetWorkspaceBySlug(ctx context.Context, slug string) (*pro
 
 func (s *SQLiteStore) ListWorkspaces(ctx context.Context) ([]*proto.Workspace, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, slug, icon_url, agent_provision_token, created_at, updated_at FROM workspaces ORDER BY created_at`)
+		`SELECT id, name, slug, icon_url, agent_provision_token, created_at, updated_at FROM workspaces ORDER BY created_at LIMIT 200`)
 	if err != nil {
 		return nil, err
 	}
@@ -360,7 +362,7 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, id string) (*proto.Channel
 func (s *SQLiteStore) ListChannels(ctx context.Context, workspaceID string) ([]*proto.Channel, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, workspace_id, name, type, topic, is_private, created_at, updated_at
-		 FROM channels WHERE workspace_id = ? ORDER BY name`, workspaceID)
+		 FROM channels WHERE workspace_id = ? ORDER BY name LIMIT 200`, workspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -753,12 +755,12 @@ func (s *SQLiteStore) ListTasks(ctx context.Context, workspaceID string, status 
 	if status != "" {
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT id, workspace_id, channel_id, assigned_to, created_by, title, description, status, priority, due_at, created_at, updated_at
-			 FROM tasks WHERE workspace_id = ? AND status = ? ORDER BY created_at DESC`,
+			 FROM tasks WHERE workspace_id = ? AND status = ? ORDER BY created_at DESC LIMIT 200`,
 			workspaceID, string(status))
 	} else {
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT id, workspace_id, channel_id, assigned_to, created_by, title, description, status, priority, due_at, created_at, updated_at
-			 FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC`,
+			 FROM tasks WHERE workspace_id = ? ORDER BY created_at DESC LIMIT 200`,
 			workspaceID)
 	}
 	if err != nil {
@@ -1035,7 +1037,7 @@ func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*p
 		`SELECT c.id, c.workspace_id, c.name, c.type, c.topic, c.is_private, c.created_at, c.updated_at
 		 FROM channels c JOIN channel_members cm ON c.id = cm.channel_id
 		 WHERE cm.member_id = ? AND c.type IN ('dm', 'group_dm')
-		 ORDER BY c.updated_at DESC`,
+		 ORDER BY c.updated_at DESC LIMIT 200`,
 		memberID)
 	if err != nil {
 		return nil, err
@@ -1058,6 +1060,12 @@ func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*p
 }
 
 func (s *SQLiteStore) CreateDMChannel(ctx context.Context, ch *proto.Channel, memberIDs []string) error {
+	return retryOnLocked(maxRetries, func() error {
+		return s.createDMChannel(ctx, ch, memberIDs)
+	})
+}
+
+func (s *SQLiteStore) createDMChannel(ctx context.Context, ch *proto.Channel, memberIDs []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1196,7 +1204,7 @@ func (s *SQLiteStore) ListApprovals(ctx context.Context, workspaceID string, sta
 		query += " AND status = ?"
 		args = append(args, string(status))
 	}
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY created_at DESC LIMIT 200"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -1236,4 +1244,28 @@ func nullStr(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// retryOnLocked retries fn up to n times when it returns "database is locked".
+func retryOnLocked(n int, fn func() error) error {
+	var err error
+	for i := 0; i < n; i++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if isLockedError(err) {
+			time.Sleep(time.Duration(100*(i+1)) * time.Millisecond)
+			continue
+		}
+		return err
+	}
+	return err
+}
+
+func isLockedError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "database is locked")
 }
