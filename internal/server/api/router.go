@@ -295,10 +295,14 @@ func (r *Router) setupRoutes() {
 			p.Get("/workspaces/{id}/members/{memberID}", r.handleGetMember)
 			p.Patch("/workspaces/{id}/members/{memberID}", r.handleUpdateMember)
 			p.Delete("/workspaces/{id}/members/{memberID}", r.handleDeleteMember)
+			p.Get("/members/me", r.handleMyProfile)
+			p.Post("/members/me/avatar", r.handleUploadAvatar)
+			p.Post("/members/me/password", r.handleChangePassword)
 
 			// Channels
 			p.Post("/workspaces/{id}/channels", r.handleCreateChannel)
 			p.Get("/workspaces/{id}/channels", r.handleListChannels)
+			p.Get("/workspaces/{id}/channels/search", r.handleSearchChannels)
 			p.Get("/workspaces/{id}/channels/{channelID}", r.handleGetChannel)
 			p.Patch("/workspaces/{id}/channels/{channelID}", r.handleUpdateChannel)
 			p.Delete("/workspaces/{id}/channels/{channelID}", r.handleDeleteChannel)
@@ -1259,6 +1263,7 @@ func (r *Router) handleUpdateMessage(w http.ResponseWriter, req *http.Request) {
 	}) {
 		return
 	}
+	r.trackMessageEdit(existing)
 	if err := r.services.UpdateMessage(req.Context(), existing); err != nil {
 		serverError(w, err, "internal error")
 		return
@@ -1898,6 +1903,7 @@ func (r *Router) handleWSMessageEdit(c *websocket.Conn, env websocket.Envelope) 
 		return
 	}
 	msg.Content = data.Content
+	r.trackMessageEdit(msg)
 	if err := r.services.UpdateMessage(c.Context(), msg); err != nil {
 		wsError(c, err, "ws update message failed")
 		return
@@ -2370,7 +2376,11 @@ func (r *Router) handleDownloadFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer reader.Close()
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+sanitizeFilename(f.Filename)+"\"")
+	disposition := "attachment"
+	if strings.HasPrefix(f.MimeType, "image/") {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Disposition", disposition+"; filename=\""+sanitizeFilename(f.Filename)+"\"")
 	w.Header().Set("Content-Type", f.MimeType)
 	io.Copy(w, reader)
 }
@@ -2584,6 +2594,115 @@ func (r *Router) handleListAgents(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, agents)
+}
+
+// --- Profile handlers ---
+
+func (r *Router) handleMyProfile(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	member.APIKey = ""
+	member.PasswordHash = ""
+	writeJSON(w, http.StatusOK, member)
+}
+
+func (r *Router) handleUploadAvatar(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	if err := req.ParseMultipartForm(5 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid form")
+		return
+	}
+	file, header, err := req.FormFile("avatar")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "avatar field required")
+		return
+	}
+	defer file.Close()
+	ext := filepath.Ext(header.Filename)
+	path := "avatars/" + member.ID + ext
+	if err := r.storage.Save(req.Context(), path, file); err != nil {
+		serverError(w, err, "save avatar failed")
+		return
+	}
+	member.AvatarURL = path
+	if err := r.services.UpdateMember(req.Context(), member); err != nil {
+		serverError(w, err, "update member failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"avatar_url": path})
+}
+
+func (r *Router) handleChangePassword(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	var body struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := decodeJSON(req, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if member.PasswordHash == "" {
+		writeError(w, http.StatusBadRequest, "no password set (use OAuth)")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(member.PasswordHash), []byte(body.OldPassword)); err != nil {
+		writeError(w, http.StatusUnauthorized, "wrong password")
+		return
+	}
+	if len(body.NewPassword) < 6 {
+		writeError(w, http.StatusBadRequest, "password must be at least 6 characters")
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(body.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		serverError(w, err, "hash failed")
+		return
+	}
+	member.PasswordHash = string(hash)
+	if err := r.services.UpdateMember(req.Context(), member); err != nil {
+		serverError(w, err, "update failed")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Channel search ---
+
+func (r *Router) handleSearchChannels(w http.ResponseWriter, req *http.Request) {
+	if requireWorkspaceAuth(w, req, chi.URLParam(req, "id")) == nil {
+		return
+	}
+	q := req.URL.Query().Get("q")
+	if q == "" {
+		writeError(w, http.StatusBadRequest, "q is required")
+		return
+	}
+	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
+	channels, err := r.services.SearchChannels(req.Context(), chi.URLParam(req, "id"), q, limit)
+	if err != nil {
+		serverError(w, err, "search channels failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, channels)
+}
+
+// --- Message edit tracking ---
+
+func (r *Router) trackMessageEdit(msg *proto.Message) {
+	msg.EditedAt = time.Now().UnixMilli()
+	msg.EditCount++
 }
 
 // --- Channel archive ---

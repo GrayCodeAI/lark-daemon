@@ -118,6 +118,8 @@ type Message struct {
 	FileID    string          `json:"file_id,omitempty"`
 	Type      string          `json:"type"`
 	Metadata  json.RawMessage `json:"metadata,omitempty"`
+	EditedAt  int64           `json:"edited_at,omitempty"`
+	EditCount int             `json:"edit_count,omitempty"`
 	CreatedAt int64           `json:"created_at"`
 	UpdatedAt int64           `json:"updated_at"`
 }

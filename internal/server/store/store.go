@@ -62,6 +62,7 @@ type Store interface {
 
 	// Search.
 	SearchMessages(ctx context.Context, query string, channelID string, limit int) ([]*proto.Message, error)
+	SearchChannels(ctx context.Context, workspaceID, query string, limit int) ([]*proto.Channel, error)
 
 	// Task operations.
 	CreateTask(ctx context.Context, t *proto.Task) error

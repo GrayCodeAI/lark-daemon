@@ -166,6 +166,10 @@ func (s *Services) SearchMessages(ctx context.Context, query, channelID string, 
 	return s.store.SearchMessages(ctx, query, channelID, limit)
 }
 
+func (s *Services) SearchChannels(ctx context.Context, workspaceID, query string, limit int) ([]*proto.Channel, error) {
+	return s.store.SearchChannels(ctx, workspaceID, query, limit)
+}
+
 // --- Tasks ---
 
 func (s *Services) CreateTask(ctx context.Context, t *proto.Task) error {

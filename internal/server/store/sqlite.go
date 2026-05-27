@@ -40,6 +40,8 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		`ALTER TABLE members ADD COLUMN password_hash TEXT`,
 		`ALTER TABLE messages ADD COLUMN file_id TEXT`,
 		`ALTER TABLE channels ADD COLUMN is_archived INTEGER DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN edited_at INTEGER DEFAULT 0`,
+		`ALTER TABLE messages ADD COLUMN edit_count INTEGER DEFAULT 0`,
 	} {
 		db.Exec(m) // ignore error if column already exists
 	}
@@ -540,9 +542,9 @@ func (s *SQLiteStore) CreateMessage(ctx context.Context, m *proto.Message) error
 		m.Type = "text"
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (id, channel_id, sender_id, thread_id, content, type, metadata, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ChannelID, m.SenderID, nullStr(m.ThreadID), m.Content, m.Type, m.Metadata, m.CreatedAt, m.UpdatedAt)
+		`INSERT INTO messages (id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ChannelID, m.SenderID, nullStr(m.ThreadID), m.Content, m.Type, m.Metadata, m.EditedAt, m.EditCount, m.CreatedAt, m.UpdatedAt)
 	return err
 }
 
@@ -551,9 +553,9 @@ func (s *SQLiteStore) GetMessage(ctx context.Context, id string) (*proto.Message
 	var threadID sql.NullString
 	var metadata sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
 		 FROM messages WHERE id = ?`, id).
-		Scan(&m.ID, &m.ChannelID, &m.SenderID, &threadID, &m.Content, &m.Type, &metadata, &m.CreatedAt, &m.UpdatedAt)
+		Scan(&m.ID, &m.ChannelID, &m.SenderID, &threadID, &m.Content, &m.Type, &metadata, &m.EditedAt, &m.EditCount, &m.CreatedAt, &m.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -572,7 +574,7 @@ func (s *SQLiteStore) ListMessages(ctx context.Context, channelID string, limit,
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
 		 FROM messages WHERE channel_id = ? AND thread_id IS NULL
 		 ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		channelID, limit, offset)
@@ -585,7 +587,7 @@ func (s *SQLiteStore) ListMessages(ctx context.Context, channelID string, limit,
 
 func (s *SQLiteStore) ListMessagesBySender(ctx context.Context, senderID string) ([]*proto.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
 		 FROM messages WHERE sender_id = ? ORDER BY created_at DESC LIMIT 500`, senderID)
 	if err != nil {
 		return nil, err
@@ -604,7 +606,7 @@ func (s *SQLiteStore) CountMessagesBySender(ctx context.Context, senderID string
 
 func (s *SQLiteStore) ListThreadMessages(ctx context.Context, threadID string) ([]*proto.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
 		 FROM messages WHERE thread_id = ? OR id = ?
 		 ORDER BY created_at ASC`,
 		threadID, threadID)
@@ -621,7 +623,7 @@ func scanMessages(rows *sql.Rows) ([]*proto.Message, error) {
 		m := &proto.Message{}
 		var threadID sql.NullString
 		var metadata sql.NullString
-		if err := rows.Scan(&m.ID, &m.ChannelID, &m.SenderID, &threadID, &m.Content, &m.Type, &metadata, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChannelID, &m.SenderID, &threadID, &m.Content, &m.Type, &metadata, &m.EditedAt, &m.EditCount, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		m.ThreadID = threadID.String
@@ -636,8 +638,8 @@ func scanMessages(rows *sql.Rows) ([]*proto.Message, error) {
 func (s *SQLiteStore) UpdateMessage(ctx context.Context, m *proto.Message) error {
 	m.UpdatedAt = time.Now().UnixMilli()
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE messages SET content=?, metadata=?, updated_at=? WHERE id=?`,
-		m.Content, m.Metadata, m.UpdatedAt, m.ID)
+		`UPDATE messages SET content=?, metadata=?, edited_at=?, edit_count=?, updated_at=? WHERE id=?`,
+		m.Content, m.Metadata, m.EditedAt, m.EditCount, m.UpdatedAt, m.ID)
 	return err
 }
 
@@ -651,7 +653,7 @@ func (s *SQLiteStore) GetRecentMessages(ctx context.Context, channelID string, l
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
 		 FROM messages WHERE channel_id = ?
 		 ORDER BY created_at DESC LIMIT ?`, channelID, limit)
 	if err != nil {
@@ -724,14 +726,14 @@ func (s *SQLiteStore) SearchMessages(ctx context.Context, query string, channelI
 	var err error
 	if channelID != "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.created_at, m.updated_at
+			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.edited_at, m.edit_count, m.created_at, m.updated_at
 			 FROM messages m JOIN messages_fts fts ON m.rowid = fts.rowid
 			 WHERE messages_fts MATCH ? AND m.channel_id = ?
 			 ORDER BY m.created_at DESC LIMIT ?`,
 			query, channelID, limit)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.created_at, m.updated_at
+			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.edited_at, m.edit_count, m.created_at, m.updated_at
 			 FROM messages m JOIN messages_fts fts ON m.rowid = fts.rowid
 			 WHERE messages_fts MATCH ?
 			 ORDER BY m.created_at DESC LIMIT ?`,
@@ -742,6 +744,21 @@ func (s *SQLiteStore) SearchMessages(ctx context.Context, query string, channelI
 	}
 	defer rows.Close()
 	return scanMessages(rows)
+}
+
+func (s *SQLiteStore) SearchChannels(ctx context.Context, workspaceID, query string, limit int) ([]*proto.Channel, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at
+		 FROM channels WHERE workspace_id = ? AND name LIKE ? ORDER BY name LIMIT ?`,
+		workspaceID, "%"+query+"%", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanChannels(rows)
 }
 
 // --- Tasks ---
