@@ -32,6 +32,12 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
+	// Rebuild FTS index to ensure consistency after any VACUUM
+	// that may have changed implicit rowids.
+	if _, err := db.Exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("fts rebuild: %w", err)
+	}
 	return &SQLiteStore{db: db}, nil
 }
 

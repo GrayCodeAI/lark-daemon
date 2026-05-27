@@ -67,6 +67,13 @@ func (h *Hub) SetWakeCallback(fn func(agentID string)) {
 	h.onWake = fn
 }
 
+// WakeCallback returns the current wake callback.
+func (h *Hub) WakeCallback() func(agentID string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.onWake
+}
+
 // Add registers a new connection and sets presence to online.
 // If a connection with the same ID already exists, the old connection is closed asynchronously.
 func (h *Hub) Add(c *Conn) {

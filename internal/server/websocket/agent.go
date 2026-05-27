@@ -17,6 +17,7 @@ type AgentManager struct {
 	hub    *Hub
 	store  AgentStore
 	logger *slog.Logger
+	onWake func(agentID string)
 }
 
 // NewAgentManager creates a new AgentManager.
@@ -26,6 +27,11 @@ func NewAgentManager(hub *Hub, store AgentStore, logger *slog.Logger) *AgentMana
 		store:  store,
 		logger: logger,
 	}
+}
+
+// SetWakeCallback sets a callback invoked when an agent sends hello.
+func (am *AgentManager) SetWakeCallback(fn func(agentID string)) {
+	am.onWake = fn
 }
 
 // HandleAgentHello processes an agent.hello event.
@@ -62,6 +68,11 @@ func (am *AgentManager) HandleAgentHello(c *Conn, data *AgentHelloData) {
 
 	// Ensure presence is online
 	am.hub.SetPresence(c.ID(), string(proto.PresenceOnline))
+
+	// Record wake metric
+	if am.onWake != nil {
+		am.onWake(c.ID())
+	}
 
 	slog.Info("agent hello", "name", c.Name(), "id", c.ID())
 }

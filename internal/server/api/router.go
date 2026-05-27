@@ -112,6 +112,8 @@ func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, a
 		collector:    collector,
 		rateLimiter:  rl,
 	}
+	// Forward the hub's wake callback to the agent manager so HandleAgentHello also records metrics
+	r.agentManager.SetWakeCallback(hub.WakeCallback())
 	r.setupMiddleware()
 	r.setupRoutes()
 	return r
