@@ -4,8 +4,14 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"time"
 
 	ws "github.com/gorilla/websocket"
+)
+
+const (
+	pingInterval = 30 * time.Second
+	pongWait     = 60 * time.Second
 )
 
 // Conn wraps a WebSocket connection with identity and channel subscriptions.
@@ -162,6 +168,11 @@ func (c *Conn) ReadPump(handler func(env Envelope)) {
 	}()
 
 	c.conn.SetReadLimit(65536)
+	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.conn.SetPongHandler(func(string) error {
+		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
@@ -182,19 +193,38 @@ func (c *Conn) ReadPump(handler func(env Envelope)) {
 
 // WritePump writes messages from the send channel to the WebSocket.
 func (c *Conn) WritePump() {
+	ticker := time.NewTicker(pingInterval)
 	defer func() {
+		ticker.Stop()
 		c.writeMu.Lock()
 		c.conn.Close()
 		c.writeMu.Unlock()
 	}()
 
-	for msg := range c.send {
-		c.writeMu.Lock()
-		err := c.conn.WriteMessage(ws.TextMessage, msg)
-		c.writeMu.Unlock()
-		if err != nil {
-			slog.Error("ws write error", "err", err, "conn_id", c.ID())
-			return
+	for {
+		select {
+		case msg, ok := <-c.send:
+			if !ok {
+				// send channel closed
+				return
+			}
+			c.writeMu.Lock()
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			err := c.conn.WriteMessage(ws.TextMessage, msg)
+			c.writeMu.Unlock()
+			if err != nil {
+				slog.Error("ws write error", "err", err, "conn_id", c.ID())
+				return
+			}
+		case <-ticker.C:
+			c.writeMu.Lock()
+			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := c.conn.WriteMessage(ws.PingMessage, nil); err != nil {
+				c.writeMu.Unlock()
+				slog.Error("ws ping error", "err", err, "conn_id", c.ID())
+				return
+			}
+			c.writeMu.Unlock()
 		}
 	}
 }

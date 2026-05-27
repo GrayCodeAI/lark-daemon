@@ -1,4 +1,4 @@
-.PHONY: build run clean test lint
+.PHONY: build run clean test lint fmt tidy docker up down
 
 # Build server binary.
 build:
@@ -23,6 +23,14 @@ test:
 # Run linter.
 lint:
 	golangci-lint run ./...
+
+# Format code.
+fmt:
+	go fmt ./...
+
+# Tidy dependencies.
+tidy:
+	go mod tidy
 
 # Clean build artifacts.
 clean:
