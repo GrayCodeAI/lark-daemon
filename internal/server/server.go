@@ -39,9 +39,14 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	level := parseLogLevel(cfg.LogLevel)
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-		Level: level,
-	}))
+	var handler slog.Handler
+	switch cfg.LogFormat {
+	case "json":
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	default:
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	}
+	logger := slog.New(handler)
 
 	if err := os.MkdirAll(filepath.Dir(cfg.DBPath), 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)

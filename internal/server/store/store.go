@@ -102,5 +102,6 @@ type Store interface {
 	UpdateApproval(ctx context.Context, a *proto.ApprovalRequest) error
 
 	// Lifecycle.
+	Ping(ctx context.Context) error
 	Close() error
 }

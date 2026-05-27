@@ -236,6 +236,12 @@ func requireWorkspaceAuth(w http.ResponseWriter, req *http.Request, workspaceID 
 func (r *Router) setupRoutes() {
 	// Health check — no rate limiting
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) {
+		ctx, cancel := context.WithTimeout(req.Context(), 3*time.Second)
+		defer cancel()
+		if err := r.store.Ping(ctx); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "error", "error": "database unreachable"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 

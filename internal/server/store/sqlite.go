@@ -45,6 +45,10 @@ func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
+func (s *SQLiteStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // --- Workspaces ---
 
 func (s *SQLiteStore) CreateWorkspace(ctx context.Context, ws *proto.Workspace) error {

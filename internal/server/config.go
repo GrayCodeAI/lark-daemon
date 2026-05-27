@@ -14,6 +14,7 @@ type Config struct {
 	DataDir    string
 	JWTSecret  string
 	LogLevel   string
+	LogFormat  string
 	CORSOrigin string
 	TLSCert    string
 	TLSKey     string
@@ -29,6 +30,7 @@ func LoadConfig() *Config {
 		DataDir:    getEnv("LARK_DATA_DIR", "data"),
 		JWTSecret:  getEnv("LARK_JWT_SECRET", ""),
 		LogLevel:   getEnv("LARK_LOG_LEVEL", "info"),
+		LogFormat:  getEnv("LARK_LOG_FORMAT", "text"),
 		CORSOrigin: getEnv("LARK_CORS_ORIGIN", ""),
 		TLSCert:    getEnv("LARK_TLS_CERT", ""),
 		TLSKey:     getEnv("LARK_TLS_KEY", ""),
