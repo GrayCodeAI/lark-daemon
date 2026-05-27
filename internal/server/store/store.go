@@ -43,6 +43,7 @@ type Store interface {
 	IsChannelMember(ctx context.Context, channelID, memberID string) (bool, error)
 	ListMemberChannelIDs(ctx context.Context, memberID string) ([]string, error)
 	UpdateLastRead(ctx context.Context, channelID, memberID string) error
+	UpdateNotificationPreference(ctx context.Context, channelID, memberID, preference string) error
 
 	// Message operations.
 	CreateMessage(ctx context.Context, m *proto.Message) error

@@ -71,6 +71,7 @@ func (rl *RateLimiter) Allow(ip string) bool {
 }
 
 // rateLimitMiddleware returns an HTTP handler that rate-limits per IP.
+// Applies stricter limits to mutation endpoints.
 func rateLimitMiddleware(rl *RateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -78,9 +79,18 @@ func rateLimitMiddleware(rl *RateLimiter) func(http.Handler) http.Handler {
 			if idx := strings.LastIndex(ip, ":"); idx != -1 {
 				ip = ip[:idx]
 			}
+			// Allow up to N reads, but only N/2 mutations per window
+			cost := 1
+			if r.Method == "POST" || r.Method == "PATCH" || r.Method == "DELETE" {
+				cost = 2
+			}
 			if !rl.Allow(ip) {
 				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
+			}
+			// Deduct extra token for mutations
+			if cost > 1 {
+				rl.Allow(ip) // deduct second token
 			}
 			next.ServeHTTP(w, r)
 		})
@@ -370,6 +380,7 @@ func (r *Router) setupRoutes() {
 			// Unread
 			p.Get("/members/{id}/unread", r.handleGetUnread)
 			p.Post("/channels/{id}/read", r.handleMarkRead)
+			p.Patch("/channels/{id}/notification-preference", r.handleNotificationPreference)
 
 			// Webhooks management
 			p.Post("/workspaces/{id}/webhooks", r.handleCreateWebhook)
@@ -1380,9 +1391,19 @@ func (r *Router) handleRemoveReaction(w http.ResponseWriter, req *http.Request) 
 		writeError(w, http.StatusUnauthorized, "not authenticated")
 		return
 	}
-	if err := r.services.RemoveReaction(req.Context(), chi.URLParam(req, "id"), member.ID, chi.URLParam(req, "emoji")); err != nil {
+	msgID := chi.URLParam(req, "id")
+	if err := r.services.RemoveReaction(req.Context(), msgID, member.ID, chi.URLParam(req, "emoji")); err != nil {
 		serverError(w, err, "internal error")
 		return
+	}
+	// Broadcast reaction removal
+	msg, err := r.services.GetMessage(req.Context(), msgID)
+	if err == nil && msg != nil {
+		r.hub.BroadcastToChannel(msg.ChannelID, websocket.NewEnvelope("reaction.remove", map[string]string{
+			"message_id": msgID,
+			"member_id":  member.ID,
+			"emoji":      chi.URLParam(req, "emoji"),
+		}))
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -2267,6 +2288,29 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer file.Close()
+	// Validate file type
+	mimeType := header.Header.Get("Content-Type")
+	if mimeType == "" {
+		buf := make([]byte, 512)
+		n, _ := file.Read(buf)
+		mimeType = http.DetectContentType(buf[:n])
+		file.Seek(0, 0) // reset reader
+	}
+	allowedTypes := []string{
+		"image/", "text/", "application/pdf", "application/json",
+		"application/zip", "application/gzip", "application/x-tar",
+	}
+	allowed := false
+	for _, t := range allowedTypes {
+		if strings.HasPrefix(mimeType, t) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		writeError(w, http.StatusBadRequest, "file type not allowed: "+mimeType)
+		return
+	}
 	fID := proto.NewID()
 	ext := filepath.Ext(header.Filename)
 	storagePath := filepath.Join(workspaceID, fID+ext)
@@ -2274,8 +2318,7 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		serverError(w, err, "failed to save file")
 		return
 	}
-	// Detect MIME type from header or content
-	mimeType := header.Header.Get("Content-Type")
+	// Detect MIME type from header or content — already detected above during validation
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
@@ -2566,6 +2609,32 @@ func (r *Router) handleMarkRead(w http.ResponseWriter, req *http.Request) {
 	channelID := chi.URLParam(req, "id")
 	if err := r.services.MarkChannelRead(req.Context(), channelID, member.ID); err != nil {
 		serverError(w, err, "internal error")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Notification preferences ---
+
+func (r *Router) handleNotificationPreference(w http.ResponseWriter, req *http.Request) {
+	member := memberFromContext(req)
+	if member == nil {
+		writeError(w, http.StatusUnauthorized, "not authenticated")
+		return
+	}
+	var body struct {
+		Preference string `json:"preference"`
+	}
+	if err := decodeJSON(req, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	if body.Preference != "all" && body.Preference != "mentions" && body.Preference != "none" {
+		writeError(w, http.StatusBadRequest, "preference must be all, mentions, or none")
+		return
+	}
+	if err := r.store.UpdateNotificationPreference(req.Context(), chi.URLParam(req, "id"), member.ID, body.Preference); err != nil {
+		serverError(w, err, "update preference failed")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -523,6 +523,13 @@ func (s *SQLiteStore) UpdateLastRead(ctx context.Context, channelID, memberID st
 	return err
 }
 
+func (s *SQLiteStore) UpdateNotificationPreference(ctx context.Context, channelID, memberID, preference string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE channel_members SET notification_preference = ? WHERE channel_id = ? AND member_id = ?`,
+		preference, channelID, memberID)
+	return err
+}
+
 // --- Messages ---
 
 func (s *SQLiteStore) CreateMessage(ctx context.Context, m *proto.Message) error {
