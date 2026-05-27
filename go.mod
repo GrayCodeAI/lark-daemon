@@ -1,4 +1,4 @@
-module lark
+module lark-daemon
 
 go 1.25.0
 

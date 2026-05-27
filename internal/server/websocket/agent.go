@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"lark/internal/proto"
+	"lark-daemon/internal/proto"
 )
 
 // AgentStore is the interface the AgentManager needs to update agent data.

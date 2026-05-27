@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"lark/internal/proto"
+	"lark-daemon/internal/proto"
 	_ "modernc.org/sqlite"
 )
 

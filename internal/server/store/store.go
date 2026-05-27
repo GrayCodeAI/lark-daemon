@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"lark/internal/proto"
+	"lark-daemon/internal/proto"
 )
 
 // Store defines the data access interface.

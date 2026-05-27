@@ -11,11 +11,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"lark/internal/proto"
-	"lark/internal/server/metrics"
-	"lark/internal/server/service"
-	"lark/internal/server/store"
-	"lark/internal/server/websocket"
+	"lark-daemon/internal/proto"
+	"lark-daemon/internal/server/metrics"
+	"lark-daemon/internal/server/service"
+	"lark-daemon/internal/server/store"
+	"lark-daemon/internal/server/websocket"
 )
 
 // testEnv holds the test server and helpers.

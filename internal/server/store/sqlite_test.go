@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"lark/internal/proto"
+	"lark-daemon/internal/proto"
 )
 
 func newTestStore(t *testing.T) *SQLiteStore {

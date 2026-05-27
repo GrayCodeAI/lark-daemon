@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"lark/internal/proto"
-	"lark/internal/server/store"
+	"lark-daemon/internal/proto"
+	"lark-daemon/internal/server/store"
 )
 
 // AgentMetrics holds aggregated metrics for an agent.

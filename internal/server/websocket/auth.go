@@ -8,7 +8,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"lark/internal/proto"
+	"lark-daemon/internal/proto"
 )
 
 // JWTClaims represents JWT token claims.

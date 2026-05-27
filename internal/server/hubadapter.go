@@ -3,9 +3,9 @@ package server
 import (
 	"context"
 
-	"lark/internal/proto"
-	"lark/internal/server/store"
-	"lark/internal/server/websocket"
+	"lark-daemon/internal/proto"
+	"lark-daemon/internal/server/store"
+	"lark-daemon/internal/server/websocket"
 )
 
 // HubStoreAdapter adapts the store.Store to websocket.StoreQuerier and websocket.AgentStore.

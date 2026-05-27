@@ -18,11 +18,11 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
-	"lark/internal/proto"
-	"lark/internal/server/metrics"
-	"lark/internal/server/service"
-	"lark/internal/server/store"
-	"lark/internal/server/websocket"
+	"lark-daemon/internal/proto"
+	"lark-daemon/internal/server/metrics"
+	"lark-daemon/internal/server/service"
+	"lark-daemon/internal/server/store"
+	"lark-daemon/internal/server/websocket"
 )
 
 // RateLimiter provides simple per-IP rate limiting.
