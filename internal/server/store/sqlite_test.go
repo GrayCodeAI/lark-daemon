@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"lark-daemon/internal/proto"
@@ -468,7 +469,7 @@ func TestSearchMessages(t *testing.T) {
 	s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: member.ID, Content: "goodbye world"})
 	s.CreateMessage(ctx, &proto.Message{ChannelID: ch.ID, SenderID: member.ID, Content: "foo bar"})
 
-	results, err := s.SearchMessages(ctx, "world", "", 10)
+	results, err := s.SearchMessages(ctx, "world", "", ws.ID, 10)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -477,13 +478,13 @@ func TestSearchMessages(t *testing.T) {
 	}
 
 	// Search with channel filter
-	results, _ = s.SearchMessages(ctx, "world", ch.ID, 10)
+	results, _ = s.SearchMessages(ctx, "world", ch.ID, ws.ID, 10)
 	if len(results) != 2 {
 		t.Fatalf("expected 2 with channel, got %d", len(results))
 	}
 
 	// No match
-	results, _ = s.SearchMessages(ctx, "nonexistent", "", 10)
+	results, _ = s.SearchMessages(ctx, "nonexistent", "", ws.ID, 10)
 	if len(results) != 0 {
 		t.Fatalf("expected 0, got %d", len(results))
 	}
@@ -1012,5 +1013,435 @@ func TestListMessagesBySenderLimit(t *testing.T) {
 	msgs, _ := s.ListMessagesBySender(ctx, alice.ID)
 	if len(msgs) > 500 {
 		t.Fatalf("expected max 500, got %d", len(msgs))
+	}
+}
+
+// --- Notification tests ---
+
+func TestNotificationCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	member := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	n := &proto.Notification{MemberID: member.ID, Type: "mention", Title: "Mention", Body: "You were mentioned"}
+	if err := s.CreateNotification(ctx, n); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if n.ID == "" {
+		t.Fatal("ID not set")
+	}
+
+	notifs, err := s.ListNotifications(ctx, member.ID, false, 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(notifs) != 1 {
+		t.Fatalf("expected 1, got %d", len(notifs))
+	}
+	if notifs[0].Title != "Mention" {
+		t.Fatalf("mismatch: %+v", notifs[0])
+	}
+}
+
+func TestNotificationMarkRead(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	member := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	n := &proto.Notification{MemberID: member.ID, Type: "dm", Title: "DM", Body: "hi"}
+	s.CreateNotification(ctx, n)
+
+	if err := s.MarkNotificationRead(ctx, n.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+
+	count, _ := s.CountUnreadNotifications(ctx, member.ID)
+	if count != 0 {
+		t.Fatalf("expected 0 unread, got %d", count)
+	}
+}
+
+func TestNotificationMarkAllRead(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	member := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	s.CreateNotification(ctx, &proto.Notification{MemberID: member.ID, Type: "mention", Title: "A", Body: "a"})
+	s.CreateNotification(ctx, &proto.Notification{MemberID: member.ID, Type: "dm", Title: "B", Body: "b"})
+
+	if err := s.MarkAllNotificationsRead(ctx, member.ID); err != nil {
+		t.Fatalf("mark all: %v", err)
+	}
+
+	count, _ := s.CountUnreadNotifications(ctx, member.ID)
+	if count != 0 {
+		t.Fatalf("expected 0, got %d", count)
+	}
+}
+
+func TestNotificationUnreadOnly(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	member := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	n1 := &proto.Notification{MemberID: member.ID, Type: "mention", Title: "A", Body: "a"}
+	s.CreateNotification(ctx, n1)
+	s.CreateNotification(ctx, &proto.Notification{MemberID: member.ID, Type: "dm", Title: "B", Body: "b"})
+	s.MarkNotificationRead(ctx, n1.ID)
+
+	unread, _ := s.ListNotifications(ctx, member.ID, true, 10)
+	if len(unread) != 1 {
+		t.Fatalf("expected 1 unread, got %d", len(unread))
+	}
+}
+
+func TestNotificationIsolation(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	alice := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	bob := seedMember(t, s, ws.ID, "bob", proto.MemberHuman)
+
+	s.CreateNotification(ctx, &proto.Notification{MemberID: alice.ID, Type: "mention", Title: "A", Body: "a"})
+	s.CreateNotification(ctx, &proto.Notification{MemberID: bob.ID, Type: "dm", Title: "B", Body: "b"})
+
+	aliceNotifs, _ := s.ListNotifications(ctx, alice.ID, false, 10)
+	bobNotifs, _ := s.ListNotifications(ctx, bob.ID, false, 10)
+	if len(aliceNotifs) != 1 || len(bobNotifs) != 1 {
+		t.Fatalf("isolation failed: alice=%d bob=%d", len(aliceNotifs), len(bobNotifs))
+	}
+}
+
+// --- Integration tests ---
+
+func TestIntegrationCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	integ := &proto.Integration{Name: "GitHub", Type: "bot", Description: "GitHub integration"}
+	if err := s.CreateIntegration(ctx, integ); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := s.GetIntegration(ctx, integ.ID)
+	if got.Name != "GitHub" {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	all, _ := s.ListIntegrations(ctx)
+	if len(all) != 1 {
+		t.Fatalf("expected 1, got %d", len(all))
+	}
+}
+
+func TestWorkspaceIntegrationInstall(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	member := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	integ := &proto.Integration{Name: "Slack", Type: "webhook"}
+	s.CreateIntegration(ctx, integ)
+
+	wi := &proto.WorkspaceIntegration{WorkspaceID: ws.ID, IntegrationID: integ.ID, InstalledBy: member.ID}
+	if err := s.InstallIntegration(ctx, wi); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	installed, _ := s.ListWorkspaceIntegrations(ctx, ws.ID)
+	if len(installed) != 1 {
+		t.Fatalf("expected 1, got %d", len(installed))
+	}
+
+	got, _ := s.GetWorkspaceIntegration(ctx, ws.ID, integ.ID)
+	if got == nil {
+		t.Fatal("expected workspace integration")
+	}
+
+	s.UninstallIntegration(ctx, ws.ID, integ.ID)
+	installed, _ = s.ListWorkspaceIntegrations(ctx, ws.ID)
+	if len(installed) != 0 {
+		t.Fatalf("expected 0 after uninstall, got %d", len(installed))
+	}
+}
+
+// --- SSO tests ---
+
+func TestSSOProviderCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+
+	p := &proto.SSOProvider{WorkspaceID: ws.ID, Name: "Okta", Type: "oidc", Issuer: "https://okta.com", ClientID: "abc", Domain: "example.com", Enabled: true}
+	if err := s.CreateSSOProvider(ctx, p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := s.GetSSOProvider(ctx, p.ID)
+	if got.Name != "Okta" {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	all, _ := s.ListSSOProviders(ctx, ws.ID)
+	if len(all) != 1 {
+		t.Fatalf("expected 1, got %d", len(all))
+	}
+
+	byDomain, _ := s.GetSSOProviderByDomain(ctx, "example.com")
+	if byDomain == nil || byDomain.ID != p.ID {
+		t.Fatal("domain lookup failed")
+	}
+
+	s.DeleteSSOProvider(ctx, p.ID)
+	got, _ = s.GetSSOProvider(ctx, p.ID)
+	if got != nil {
+		t.Fatal("expected nil after delete")
+	}
+}
+
+// --- Call tests ---
+
+func TestCallCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	caller := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	callee := seedMember(t, s, ws.ID, "bob", proto.MemberHuman)
+
+	c := &proto.Call{WorkspaceID: ws.ID, CallerID: caller.ID, CalleeID: callee.ID, Type: proto.CallAudio, Status: proto.CallRinging}
+	if err := s.CreateCall(ctx, c); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := s.GetCall(ctx, c.ID)
+	if got.Type != proto.CallAudio || got.Status != proto.CallRinging {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	c.Status = proto.CallEnded
+	c.EndedAt = 12345
+	s.UpdateCall(ctx, c)
+	got, _ = s.GetCall(ctx, c.ID)
+	if got.Status != proto.CallEnded {
+		t.Fatalf("update failed: %+v", got)
+	}
+
+	calls, _ := s.ListCalls(ctx, caller.ID, 10)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1, got %d", len(calls))
+	}
+}
+
+// --- Workflow tests ---
+
+func TestWorkflowCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	creator := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	steps, _ := json.Marshal([]map[string]any{{"type": "send_message", "config": map[string]any{"content": "hi"}}})
+	wf := &proto.Workflow{
+		WorkspaceID: ws.ID,
+		Name:        "Auto Deploy",
+		TriggerType: "manual",
+		Steps:       steps,
+		Enabled:     true,
+		CreatedBy:   creator.ID,
+	}
+	if err := s.CreateWorkflow(ctx, wf); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := s.GetWorkflow(ctx, wf.ID)
+	if got.Name != "Auto Deploy" || !got.Enabled {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	wf.Name = "Updated"
+	s.UpdateWorkflow(ctx, wf)
+	got, _ = s.GetWorkflow(ctx, wf.ID)
+	if got.Name != "Updated" {
+		t.Fatalf("update failed")
+	}
+
+	all, _ := s.ListWorkflows(ctx, ws.ID)
+	if len(all) != 1 {
+		t.Fatalf("expected 1, got %d", len(all))
+	}
+
+	s.DeleteWorkflow(ctx, wf.ID)
+	got, _ = s.GetWorkflow(ctx, wf.ID)
+	if got != nil {
+		t.Fatal("expected nil after delete")
+	}
+}
+
+func TestWorkflowRunCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	creator := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	wf := &proto.Workflow{WorkspaceID: ws.ID, Name: "Test", TriggerType: "manual", Steps: json.RawMessage("[]"), CreatedBy: creator.ID}
+	s.CreateWorkflow(ctx, wf)
+
+	run := &proto.WorkflowRun{WorkflowID: wf.ID, Status: proto.WfRunRunning}
+	if err := s.CreateWorkflowRun(ctx, run); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := s.GetWorkflowRun(ctx, run.ID)
+	if got.Status != "running" {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	run.Status = proto.WfRunCompleted
+	run.FinishedAt = 12345
+	s.UpdateWorkflowRun(ctx, run)
+	got, _ = s.GetWorkflowRun(ctx, run.ID)
+	if got.Status != "completed" {
+		t.Fatalf("update failed: %+v", got)
+	}
+
+	runs, _ := s.ListWorkflowRuns(ctx, wf.ID, 10)
+	if len(runs) != 1 {
+		t.Fatalf("expected 1, got %d", len(runs))
+	}
+}
+
+// --- E2EE tests ---
+
+func TestUserKeyCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	member := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	k := &proto.UserKey{MemberID: member.ID, KeyType: proto.KeyIdentity, PublicKey: "base64key"}
+	if err := s.RegisterUserKey(ctx, k); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	keys, _ := s.GetUserKeys(ctx, member.ID, proto.KeyIdentity)
+	if len(keys) != 1 {
+		t.Fatalf("expected 1, got %d", len(keys))
+	}
+
+	got, _ := s.GetUserKey(ctx, k.ID)
+	if got.PublicKey != "base64key" {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	s.DeleteUserKey(ctx, k.ID)
+	keys, _ = s.GetUserKeys(ctx, member.ID, proto.KeyIdentity)
+	if len(keys) != 0 {
+		t.Fatalf("expected 0 after delete, got %d", len(keys))
+	}
+}
+
+func TestUserKeyMultipleTypes(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	member := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+
+	s.RegisterUserKey(ctx, &proto.UserKey{MemberID: member.ID, KeyType: proto.KeyIdentity, PublicKey: "k1"})
+	s.RegisterUserKey(ctx, &proto.UserKey{MemberID: member.ID, KeyType: proto.KeySignedPre, PublicKey: "k2"})
+	s.RegisterUserKey(ctx, &proto.UserKey{MemberID: member.ID, KeyType: proto.KeyOneTime, PublicKey: "k3"})
+
+	identity, _ := s.GetUserKeys(ctx, member.ID, proto.KeyIdentity)
+	signed, _ := s.GetUserKeys(ctx, member.ID, proto.KeySignedPre)
+	onetime, _ := s.GetUserKeys(ctx, member.ID, proto.KeyOneTime)
+
+	if len(identity) != 1 || len(signed) != 1 || len(onetime) != 1 {
+		t.Fatalf("expected 1 each, got identity=%d signed=%d onetime=%d", len(identity), len(signed), len(onetime))
+	}
+}
+
+func TestEncryptedMessageCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+	sender := seedMember(t, s, ws.ID, "alice", proto.MemberHuman)
+	recipient := seedMember(t, s, ws.ID, "bob", proto.MemberHuman)
+	ch := seedChannel(t, s, ws.ID, "general")
+	msg := &proto.Message{ChannelID: ch.ID, SenderID: sender.ID, Content: "encrypted msg"}
+	s.CreateMessage(ctx, msg)
+
+	em := &proto.EncryptedMessage{MessageID: msg.ID, RecipientID: recipient.ID, EncryptedContent: "encrypted", SenderIdentityKey: "key123"}
+	if err := s.CreateEncryptedMessage(ctx, em); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := s.GetEncryptedMessageForRecipient(ctx, msg.ID, recipient.ID)
+	if got == nil || got.EncryptedContent != "encrypted" {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	all, _ := s.GetEncryptedMessages(ctx, msg.ID, recipient.ID)
+	if len(all) != 1 {
+		t.Fatalf("expected 1, got %d", len(all))
+	}
+}
+
+// --- Billing tests ---
+
+func TestBillingCustomerCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+
+	c := &proto.BillingCustomer{WorkspaceID: ws.ID, Plan: proto.PlanFree, Status: proto.BillingActive}
+	if err := s.CreateBillingCustomer(ctx, c); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := s.GetBillingCustomer(ctx, ws.ID)
+	if got.Plan != proto.PlanFree {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	c.Plan = proto.PlanPro
+	c.StripeCustomerID = "cus_123"
+	s.UpdateBillingCustomer(ctx, c)
+	got, _ = s.GetBillingCustomer(ctx, ws.ID)
+	if got.Plan != proto.PlanPro || got.StripeCustomerID != "cus_123" {
+		t.Fatalf("update failed: %+v", got)
+	}
+
+	byStripe, _ := s.GetBillingCustomerByStripeID(ctx, "cus_123")
+	if byStripe == nil || byStripe.WorkspaceID != ws.ID {
+		t.Fatal("stripe lookup failed")
+	}
+
+	s.DeleteBillingCustomer(ctx, ws.ID)
+	got, _ = s.GetBillingCustomer(ctx, ws.ID)
+	if got != nil {
+		t.Fatal("expected nil after delete")
+	}
+}
+
+func TestUsageRecordCRUD(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	ws := seedWorkspace(t, s, "ws1")
+
+	r := &proto.UsageRecord{WorkspaceID: ws.ID, Metric: "messages", Quantity: 100, PeriodStart: 1000}
+	if err := s.CreateUsageRecord(ctx, r); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	got, _ := s.GetUsageRecord(ctx, ws.ID, "messages", 1000)
+	if got.Quantity != 100 {
+		t.Fatalf("mismatch: %+v", got)
+	}
+
+	all, _ := s.ListUsageRecords(ctx, ws.ID)
+	if len(all) != 1 {
+		t.Fatalf("expected 1, got %d", len(all))
 	}
 }

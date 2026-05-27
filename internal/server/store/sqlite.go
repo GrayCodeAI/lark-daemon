@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +15,9 @@ import (
 )
 
 const maxRetries = 3
+
+// schemaVersion tracks which migrations have been applied.
+const currentSchemaVersion = 10
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -34,24 +38,215 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	// Migration: add email/password_hash columns to members table if missing
-	for _, m := range []string{
-		`ALTER TABLE members ADD COLUMN email TEXT`,
-		`ALTER TABLE members ADD COLUMN password_hash TEXT`,
-		`ALTER TABLE messages ADD COLUMN file_id TEXT`,
-		`ALTER TABLE channels ADD COLUMN is_archived INTEGER DEFAULT 0`,
-		`ALTER TABLE messages ADD COLUMN edited_at INTEGER DEFAULT 0`,
-		`ALTER TABLE messages ADD COLUMN edit_count INTEGER DEFAULT 0`,
-	} {
-		db.Exec(m) // ignore error if column already exists
+	// Create schema version tracking table
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("schema_version table: %w", err)
+	}
+	if err := runMigrations(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrations: %w", err)
 	}
 	// Rebuild FTS index to ensure consistency after any VACUUM
-	// that may have changed implicit rowids.
 	if _, err := db.Exec(`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("fts rebuild: %w", err)
 	}
 	return &SQLiteStore{db: db}, nil
+}
+
+// runMigrations applies incremental schema migrations based on version tracking.
+func runMigrations(db *sql.DB) error {
+	var version int
+	db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version)
+
+	migrations := []struct {
+		version int
+		sql     string
+	}{
+		{1, `ALTER TABLE members ADD COLUMN email TEXT;
+ALTER TABLE members ADD COLUMN password_hash TEXT;
+ALTER TABLE messages ADD COLUMN file_id TEXT;
+ALTER TABLE channels ADD COLUMN is_archived INTEGER DEFAULT 0;
+ALTER TABLE messages ADD COLUMN edited_at INTEGER DEFAULT 0;
+ALTER TABLE messages ADD COLUMN edit_count INTEGER DEFAULT 0;
+ALTER TABLE messages ADD COLUMN content_type TEXT DEFAULT 'text';
+ALTER TABLE channels ADD COLUMN category TEXT;
+ALTER TABLE members ADD COLUMN status_text TEXT;
+ALTER TABLE members ADD COLUMN status_emoji TEXT;`},
+		{2, `ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'user';
+CREATE TABLE IF NOT EXISTS token_blacklist (jti TEXT PRIMARY KEY, expires_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires ON token_blacklist(expires_at);`},
+		{3, `CREATE TABLE IF NOT EXISTS message_edit_history (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    edited_at INTEGER NOT NULL,
+    edited_by TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_edit_history_msg ON message_edit_history(message_id);
+CREATE TABLE IF NOT EXISTS oauth_identities (
+    id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    provider_user_id TEXT NOT NULL,
+    email TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(provider, provider_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_member ON oauth_identities(member_id);`},
+		{4, `CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT,
+    channel_id TEXT REFERENCES channels(id) ON DELETE SET NULL,
+    message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+    is_read INTEGER DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_member ON notifications(member_id, is_read, created_at);`},
+			{5, `CREATE TABLE IF NOT EXISTS integrations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    icon_url TEXT,
+    type TEXT NOT NULL CHECK (type IN ('webhook', 'bot', 'oauth', 'custom')),
+    config_schema TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_integrations (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    integration_id TEXT NOT NULL REFERENCES integrations(id) ON DELETE CASCADE,
+    installed_by TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    config TEXT,
+    enabled INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    UNIQUE(workspace_id, integration_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ws_integrations_ws ON workspace_integrations(workspace_id);`},
+			{6, `CREATE TABLE IF NOT EXISTS sso_providers (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL CHECK (type IN ('oidc', 'saml')),
+    issuer TEXT,
+    client_id TEXT,
+    client_secret TEXT,
+    discovery_url TEXT,
+    domain TEXT,
+    enabled INTEGER DEFAULT 1,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sso_workspace ON sso_providers(workspace_id);`},
+			{7, `CREATE TABLE IF NOT EXISTS calls (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    channel_id TEXT REFERENCES channels(id) ON DELETE SET NULL,
+    caller_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    callee_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    type TEXT NOT NULL DEFAULT 'audio' CHECK (type IN ('audio', 'video')),
+    status TEXT NOT NULL DEFAULT 'ringing' CHECK (status IN ('ringing', 'answered', 'ended', 'missed')),
+    started_at INTEGER,
+    ended_at INTEGER,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(workspace_id, status);`},
+			{8, `CREATE TABLE IF NOT EXISTS workflows (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    trigger_type TEXT NOT NULL,
+    trigger_config TEXT,
+    steps TEXT NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    created_by TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflows_ws ON workflows(workspace_id, enabled);
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'completed', 'failed')),
+    trigger_data TEXT,
+    result TEXT,
+    error TEXT,
+    started_at INTEGER NOT NULL,
+    finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs ON workflow_runs(workflow_id, status);`},
+			{9, `CREATE TABLE IF NOT EXISTS user_keys (
+    id TEXT PRIMARY KEY,
+    member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    key_type TEXT NOT NULL CHECK (key_type IN ('identity', 'signed_pre', 'one_time')),
+    public_key TEXT NOT NULL,
+    private_key TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(member_id, key_type, public_key)
+);
+CREATE INDEX IF NOT EXISTS idx_user_keys_member ON user_keys(member_id, key_type);
+CREATE TABLE IF NOT EXISTS encrypted_messages (
+    id TEXT PRIMARY KEY,
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    recipient_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    encrypted_content TEXT NOT NULL,
+    sender_identity_key TEXT NOT NULL,
+    ephemeral_key TEXT,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_encrypted_messages ON encrypted_messages(message_id, recipient_id);`},
+			{10, `CREATE TABLE IF NOT EXISTS billing_customers (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    stripe_customer_id TEXT UNIQUE,
+    stripe_subscription_id TEXT,
+    plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free', 'pro', 'enterprise')),
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'past_due', 'canceled', 'trialing')),
+    current_period_start INTEGER,
+    current_period_end INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(workspace_id)
+);
+CREATE INDEX IF NOT EXISTS idx_billing_stripe ON billing_customers(stripe_customer_id);
+CREATE TABLE IF NOT EXISTS usage_records (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    metric TEXT NOT NULL,
+    quantity INTEGER NOT NULL DEFAULT 0,
+    period_start INTEGER NOT NULL,
+    period_end INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(workspace_id, metric, period_start)
+);
+CREATE INDEX IF NOT EXISTS idx_usage_workspace ON usage_records(workspace_id, metric, period_start);`},
+	}
+
+	for _, m := range migrations {
+		if m.version <= version {
+			continue
+		}
+		for _, stmt := range strings.Split(m.sql, ";") {
+			stmt = strings.TrimSpace(stmt)
+			if stmt == "" {
+				continue
+			}
+			if _, err := db.Exec(stmt); err != nil {
+				// Ignore "duplicate column" errors for idempotency
+				if !strings.Contains(err.Error(), "duplicate column") {
+					return fmt.Errorf("migration %d: %w", m.version, err)
+				}
+			}
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`, m.version, time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("record migration %d: %w", m.version, err)
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) Close() error {
@@ -172,35 +367,39 @@ func (s *SQLiteStore) CreateMember(ctx context.Context, m *proto.Member) error {
 	if m.PasswordHash != "" {
 		pwHash = m.PasswordHash
 	}
+	role := string(m.Role)
+	if role == "" {
+		role = "user"
+	}
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO members (id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.WorkspaceID, m.Name, email, pwHash, string(m.Type), m.AvatarURL, string(m.Status),
+		`INSERT INTO members (id, workspace_id, name, email, password_hash, type, role, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.WorkspaceID, m.Name, email, pwHash, string(m.Type), role, m.AvatarURL, string(m.Status),
 		apiKey, roleCard, caps, runtime, m.CreatedAt, m.UpdatedAt)
 	return err
 }
 
 func (s *SQLiteStore) GetMember(ctx context.Context, id string) (*proto.Member, error) {
 	return s.queryMember(ctx,
-		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, role, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE id = ?`, id)
 }
 
 func (s *SQLiteStore) GetMemberByAPIKey(ctx context.Context, key string) (*proto.Member, error) {
 	return s.queryMember(ctx,
-		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, role, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE api_key = ?`, key)
 }
 
 func (s *SQLiteStore) GetMemberByEmail(ctx context.Context, email string) (*proto.Member, error) {
 	return s.queryMember(ctx,
-		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, role, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE email = ?`, email)
 }
 
 func (s *SQLiteStore) GetMemberByName(ctx context.Context, workspaceID, name string) (*proto.Member, error) {
 	return s.queryMember(ctx,
-		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, role, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE workspace_id = ? AND name = ?`, workspaceID, name)
 }
 
@@ -210,8 +409,9 @@ func (s *SQLiteStore) queryMember(ctx context.Context, query string, args ...any
 	var apiKey sql.NullString
 	var email, passwordHash sql.NullString
 	var roleCard, caps, runtime []byte
+	var role string
 	err := s.db.QueryRowContext(ctx, query, args...).
-		Scan(&m.ID, &m.WorkspaceID, &m.Name, &email, &passwordHash, &memberType, &m.AvatarURL, &status,
+		Scan(&m.ID, &m.WorkspaceID, &m.Name, &email, &passwordHash, &memberType, &role, &m.AvatarURL, &status,
 			&apiKey, &roleCard, &caps, &runtime, &m.CreatedAt, &m.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -223,6 +423,7 @@ func (s *SQLiteStore) queryMember(ctx context.Context, query string, args ...any
 	m.PasswordHash = passwordHash.String
 	m.APIKey = apiKey.String
 	m.Type = proto.MemberType(memberType)
+	m.Role = proto.MemberRole(role)
 	m.Status = proto.Presence(status)
 	if len(roleCard) > 0 {
 		if err := json.Unmarshal(roleCard, &m.RoleCard); err != nil {
@@ -259,7 +460,7 @@ func (s *SQLiteStore) UpdateMemberRoleCard(ctx context.Context, memberID string,
 
 func (s *SQLiteStore) ListMembers(ctx context.Context, workspaceID string) ([]*proto.Member, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, role, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE workspace_id = ? ORDER BY name`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -276,7 +477,7 @@ func (s *SQLiteStore) ListMembersPaginated(ctx context.Context, workspaceID stri
 		offset = 0
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, email, password_hash, type, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
+		`SELECT id, workspace_id, name, email, password_hash, type, role, avatar_url, status, api_key, role_card, capabilities, runtime_info, created_at, updated_at
 		 FROM members WHERE workspace_id = ? ORDER BY name LIMIT ? OFFSET ?`, workspaceID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -293,7 +494,8 @@ func scanMembers(rows *sql.Rows) ([]*proto.Member, error) {
 		var apiKey sql.NullString
 		var email, passwordHash sql.NullString
 		var roleCard, caps, runtime []byte
-		if err := rows.Scan(&m.ID, &m.WorkspaceID, &m.Name, &email, &passwordHash, &memberType, &m.AvatarURL, &status,
+		var role string
+		if err := rows.Scan(&m.ID, &m.WorkspaceID, &m.Name, &email, &passwordHash, &memberType, &role, &m.AvatarURL, &status,
 			&apiKey, &roleCard, &caps, &runtime, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -301,6 +503,7 @@ func scanMembers(rows *sql.Rows) ([]*proto.Member, error) {
 		m.PasswordHash = passwordHash.String
 		m.APIKey = apiKey.String
 		m.Type = proto.MemberType(memberType)
+		m.Role = proto.MemberRole(role)
 		m.Status = proto.Presence(status)
 		if len(roleCard) > 0 {
 			if err := json.Unmarshal(roleCard, &m.RoleCard); err != nil {
@@ -479,7 +682,7 @@ func (s *SQLiteStore) RemoveChannelMember(ctx context.Context, channelID, member
 
 func (s *SQLiteStore) ListChannelMembers(ctx context.Context, channelID string) ([]*proto.Member, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT m.id, m.workspace_id, m.name, m.email, m.password_hash, m.type, m.avatar_url, m.status, m.api_key, m.role_card, m.capabilities, m.runtime_info, m.created_at, m.updated_at
+		`SELECT m.id, m.workspace_id, m.name, m.email, m.password_hash, m.type, m.role, m.avatar_url, m.status, m.api_key, m.role_card, m.capabilities, m.runtime_info, m.created_at, m.updated_at
 		 FROM members m JOIN channel_members cm ON m.id = cm.member_id
 		 WHERE cm.channel_id = ? ORDER BY m.name`, channelID)
 	if err != nil {
@@ -549,9 +752,9 @@ func (s *SQLiteStore) CreateMessage(ctx context.Context, m *proto.Message) error
 		m.Type = "text"
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO messages (id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		m.ID, m.ChannelID, m.SenderID, nullStr(m.ThreadID), m.Content, m.Type, m.Metadata, m.EditedAt, m.EditCount, m.CreatedAt, m.UpdatedAt)
+		`INSERT INTO messages (id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, reply_count, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.ChannelID, m.SenderID, nullStr(m.ThreadID), m.Content, m.Type, m.Metadata, m.EditedAt, m.EditCount, m.ReplyCount, m.CreatedAt, m.UpdatedAt)
 	return err
 }
 
@@ -560,9 +763,9 @@ func (s *SQLiteStore) GetMessage(ctx context.Context, id string) (*proto.Message
 	var threadID sql.NullString
 	var metadata sql.NullString
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, reply_count, created_at, updated_at
 		 FROM messages WHERE id = ?`, id).
-		Scan(&m.ID, &m.ChannelID, &m.SenderID, &threadID, &m.Content, &m.Type, &metadata, &m.EditedAt, &m.EditCount, &m.CreatedAt, &m.UpdatedAt)
+		Scan(&m.ID, &m.ChannelID, &m.SenderID, &threadID, &m.Content, &m.Type, &metadata, &m.EditedAt, &m.EditCount, &m.ReplyCount, &m.CreatedAt, &m.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -581,7 +784,7 @@ func (s *SQLiteStore) ListMessages(ctx context.Context, channelID string, limit,
 		limit = 50
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, reply_count, created_at, updated_at
 		 FROM messages WHERE channel_id = ? AND thread_id IS NULL
 		 ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		channelID, limit, offset)
@@ -594,7 +797,7 @@ func (s *SQLiteStore) ListMessages(ctx context.Context, channelID string, limit,
 
 func (s *SQLiteStore) ListMessagesBySender(ctx context.Context, senderID string) ([]*proto.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, reply_count, created_at, updated_at
 		 FROM messages WHERE sender_id = ? ORDER BY created_at DESC LIMIT 500`, senderID)
 	if err != nil {
 		return nil, err
@@ -613,7 +816,7 @@ func (s *SQLiteStore) CountMessagesBySender(ctx context.Context, senderID string
 
 func (s *SQLiteStore) ListThreadMessages(ctx context.Context, threadID string) ([]*proto.Message, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, reply_count, created_at, updated_at
 		 FROM messages WHERE thread_id = ? OR id = ?
 		 ORDER BY created_at ASC`,
 		threadID, threadID)
@@ -630,7 +833,7 @@ func scanMessages(rows *sql.Rows) ([]*proto.Message, error) {
 		m := &proto.Message{}
 		var threadID sql.NullString
 		var metadata sql.NullString
-		if err := rows.Scan(&m.ID, &m.ChannelID, &m.SenderID, &threadID, &m.Content, &m.Type, &metadata, &m.EditedAt, &m.EditCount, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChannelID, &m.SenderID, &threadID, &m.Content, &m.Type, &metadata, &m.EditedAt, &m.EditCount, &m.ReplyCount, &m.CreatedAt, &m.UpdatedAt); err != nil {
 			return nil, err
 		}
 		m.ThreadID = threadID.String
@@ -660,7 +863,7 @@ func (s *SQLiteStore) GetRecentMessages(ctx context.Context, channelID string, l
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, created_at, updated_at
+		`SELECT id, channel_id, sender_id, thread_id, content, type, metadata, edited_at, edit_count, reply_count, created_at, updated_at
 		 FROM messages WHERE channel_id = ?
 		 ORDER BY created_at DESC LIMIT ?`, channelID, limit)
 	if err != nil {
@@ -721,7 +924,7 @@ func sanitizeFTS5Query(query string) string {
 	return strings.Join(words, " ")
 }
 
-func (s *SQLiteStore) SearchMessages(ctx context.Context, query string, channelID string, limit int) ([]*proto.Message, error) {
+func (s *SQLiteStore) SearchMessages(ctx context.Context, query string, channelID string, workspaceID string, limit int) ([]*proto.Message, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -733,14 +936,22 @@ func (s *SQLiteStore) SearchMessages(ctx context.Context, query string, channelI
 	var err error
 	if channelID != "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.edited_at, m.edit_count, m.created_at, m.updated_at
+			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.edited_at, m.edit_count, m.reply_count, m.created_at, m.updated_at
 			 FROM messages m JOIN messages_fts fts ON m.rowid = fts.rowid
 			 WHERE messages_fts MATCH ? AND m.channel_id = ?
 			 ORDER BY m.created_at DESC LIMIT ?`,
 			query, channelID, limit)
+	} else if workspaceID != "" {
+		rows, err = s.db.QueryContext(ctx,
+			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.edited_at, m.edit_count, m.reply_count, m.created_at, m.updated_at
+			 FROM messages m JOIN messages_fts fts ON m.rowid = fts.rowid
+			 JOIN channels c ON m.channel_id = c.id
+			 WHERE messages_fts MATCH ? AND c.workspace_id = ?
+			 ORDER BY m.created_at DESC LIMIT ?`,
+			query, workspaceID, limit)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.edited_at, m.edit_count, m.created_at, m.updated_at
+			`SELECT m.id, m.channel_id, m.sender_id, m.thread_id, m.content, m.type, m.metadata, m.edited_at, m.edit_count, m.reply_count, m.created_at, m.updated_at
 			 FROM messages m JOIN messages_fts fts ON m.rowid = fts.rowid
 			 WHERE messages_fts MATCH ?
 			 ORDER BY m.created_at DESC LIMIT ?`,
@@ -1022,6 +1233,25 @@ func (s *SQLiteStore) ListPins(ctx context.Context, channelID string) ([]*proto.
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, message_id, channel_id, pinned_by, created_at FROM pins WHERE channel_id = ? ORDER BY created_at DESC`,
 		channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.Pin
+	for rows.Next() {
+		p := &proto.Pin{}
+		if err := rows.Scan(&p.ID, &p.MessageID, &p.ChannelID, &p.PinnedBy, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) ListPinsByMessage(ctx context.Context, messageID string) ([]*proto.Pin, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, message_id, channel_id, pinned_by, created_at FROM pins WHERE message_id = ?`,
+		messageID)
 	if err != nil {
 		return nil, err
 	}
@@ -1383,4 +1613,859 @@ func isLockedError(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "database is locked")
+}
+
+// Token blacklist operations for JWT revocation.
+
+func (s *SQLiteStore) BlacklistToken(ctx context.Context, jti string, expiresAt int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO token_blacklist (jti, expires_at) VALUES (?, ?)`, jti, expiresAt)
+	return err
+}
+
+func (s *SQLiteStore) IsTokenBlacklisted(ctx context.Context, jti string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM token_blacklist WHERE jti = ?`, jti).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// Backup creates a consistent snapshot of the database using VACUUM INTO.
+func (s *SQLiteStore) Backup(ctx context.Context, destPath string) error {
+	if !filepath.IsAbs(destPath) {
+		return fmt.Errorf("backup path must be absolute")
+	}
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf("VACUUM INTO '%s'", strings.ReplaceAll(destPath, "'", "''")))
+	return err
+}
+
+// --- Edit History ---
+
+func (s *SQLiteStore) CreateEditHistory(ctx context.Context, h *proto.EditHistory) error {
+	if h.ID == "" {
+		h.ID = uuid.New().String()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO message_edit_history (id, message_id, content, edited_at, edited_by) VALUES (?, ?, ?, ?, ?)`,
+		h.ID, h.MessageID, h.Content, h.EditedAt, h.EditedBy)
+	return err
+}
+
+func (s *SQLiteStore) ListEditHistory(ctx context.Context, messageID string) ([]*proto.EditHistory, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, message_id, content, edited_at, edited_by FROM message_edit_history WHERE message_id = ? ORDER BY edited_at ASC`, messageID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var history []*proto.EditHistory
+	for rows.Next() {
+		h := &proto.EditHistory{}
+		if err := rows.Scan(&h.ID, &h.MessageID, &h.Content, &h.EditedAt, &h.EditedBy); err != nil {
+			return nil, err
+		}
+		history = append(history, h)
+	}
+	return history, rows.Err()
+}
+
+// --- OAuth Identities ---
+
+func (s *SQLiteStore) CreateOAuthIdentity(ctx context.Context, o *proto.OAuthIdentity) error {
+	if o.ID == "" {
+		o.ID = uuid.New().String()
+	}
+	if o.CreatedAt == 0 {
+		o.CreatedAt = time.Now().UnixMilli()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO oauth_identities (id, member_id, provider, provider_user_id, email, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		o.ID, o.MemberID, o.Provider, o.ProviderUserID, o.Email, o.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetOAuthIdentity(ctx context.Context, provider, providerUserID string) (*proto.OAuthIdentity, error) {
+	o := &proto.OAuthIdentity{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, member_id, provider, provider_user_id, email, created_at FROM oauth_identities WHERE provider = ? AND provider_user_id = ?`,
+		provider, providerUserID).Scan(&o.ID, &o.MemberID, &o.Provider, &o.ProviderUserID, &o.Email, &o.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+func (s *SQLiteStore) GetOAuthIdentityByMember(ctx context.Context, memberID, provider string) (*proto.OAuthIdentity, error) {
+	o := &proto.OAuthIdentity{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, member_id, provider, provider_user_id, email, created_at FROM oauth_identities WHERE member_id = ? AND provider = ?`,
+		memberID, provider).Scan(&o.ID, &o.MemberID, &o.Provider, &o.ProviderUserID, &o.Email, &o.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return o, nil
+}
+
+// --- Notifications ---
+
+func (s *SQLiteStore) CreateNotification(ctx context.Context, n *proto.Notification) error {
+	if n.ID == "" {
+		n.ID = uuid.New().String()
+	}
+	if n.CreatedAt == 0 {
+		n.CreatedAt = time.Now().UnixMilli()
+	}
+	isRead := 0
+	if n.IsRead {
+		isRead = 1
+	}
+	var channelID, messageID any
+	if n.ChannelID != "" {
+		channelID = n.ChannelID
+	}
+	if n.MessageID != "" {
+		messageID = n.MessageID
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO notifications (id, member_id, type, title, body, channel_id, message_id, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ID, n.MemberID, n.Type, n.Title, n.Body, channelID, messageID, isRead, n.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) ListNotifications(ctx context.Context, memberID string, unreadOnly bool, limit int) ([]*proto.Notification, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `SELECT id, member_id, type, title, body, channel_id, message_id, is_read, created_at FROM notifications WHERE member_id = ?`
+	args := []any{memberID}
+	if unreadOnly {
+		query += ` AND is_read = 0`
+	}
+	query += ` ORDER BY created_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.Notification
+	for rows.Next() {
+		n := &proto.Notification{}
+		var isRead int
+		var channelID, messageID sql.NullString
+		if err := rows.Scan(&n.ID, &n.MemberID, &n.Type, &n.Title, &n.Body, &channelID, &messageID, &isRead, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		n.ChannelID = channelID.String
+		n.MessageID = messageID.String
+		n.IsRead = isRead != 0
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) MarkNotificationRead(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE notifications SET is_read = 1 WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) MarkAllNotificationsRead(ctx context.Context, memberID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE notifications SET is_read = 1 WHERE member_id = ? AND is_read = 0`, memberID)
+	return err
+}
+
+func (s *SQLiteStore) CountUnreadNotifications(ctx context.Context, memberID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE member_id = ? AND is_read = 0`, memberID).Scan(&count)
+	return count, err
+}
+
+// --- Integrations ---
+
+func (s *SQLiteStore) CreateIntegration(ctx context.Context, i *proto.Integration) error {
+	if i.ID == "" {
+		i.ID = uuid.New().String()
+	}
+	if i.CreatedAt == 0 {
+		i.CreatedAt = time.Now().UnixMilli()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO integrations (id, name, description, icon_url, type, config_schema, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		i.ID, i.Name, i.Description, i.IconURL, string(i.Type), string(i.ConfigSchema), i.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetIntegration(ctx context.Context, id string) (*proto.Integration, error) {
+	i := &proto.Integration{}
+	var configSchema, intType string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, description, icon_url, type, config_schema, created_at FROM integrations WHERE id = ?`, id).
+		Scan(&i.ID, &i.Name, &i.Description, &i.IconURL, &intType, &configSchema, &i.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	i.Type = proto.IntegrationType(intType)
+	if configSchema != "" {
+		i.ConfigSchema = json.RawMessage(configSchema)
+	}
+	return i, nil
+}
+
+func (s *SQLiteStore) ListIntegrations(ctx context.Context) ([]*proto.Integration, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, name, description, icon_url, type, config_schema, created_at FROM integrations ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.Integration
+	for rows.Next() {
+		i := &proto.Integration{}
+		var configSchema sql.NullString
+		var intType string
+		var description, iconURL sql.NullString
+		if err := rows.Scan(&i.ID, &i.Name, &description, &iconURL, &intType, &configSchema, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		i.Description = description.String
+		i.IconURL = iconURL.String
+		i.Type = proto.IntegrationType(intType)
+		if configSchema.String != "" {
+			i.ConfigSchema = json.RawMessage(configSchema.String)
+		}
+		out = append(out, i)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) InstallIntegration(ctx context.Context, wi *proto.WorkspaceIntegration) error {
+	if wi.ID == "" {
+		wi.ID = uuid.New().String()
+	}
+	if wi.CreatedAt == 0 {
+		wi.CreatedAt = time.Now().UnixMilli()
+	}
+	enabled := 0
+	if wi.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO workspace_integrations (id, workspace_id, integration_id, installed_by, config, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		wi.ID, wi.WorkspaceID, wi.IntegrationID, wi.InstalledBy, string(wi.Config), enabled, wi.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) UninstallIntegration(ctx context.Context, workspaceID, integrationID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM workspace_integrations WHERE workspace_id = ? AND integration_id = ?`, workspaceID, integrationID)
+	return err
+}
+
+func (s *SQLiteStore) ListWorkspaceIntegrations(ctx context.Context, workspaceID string) ([]*proto.WorkspaceIntegration, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, integration_id, installed_by, config, enabled, created_at FROM workspace_integrations WHERE workspace_id = ? ORDER BY created_at DESC`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.WorkspaceIntegration
+	for rows.Next() {
+		wi := &proto.WorkspaceIntegration{}
+		var config string
+		var enabled int
+		if err := rows.Scan(&wi.ID, &wi.WorkspaceID, &wi.IntegrationID, &wi.InstalledBy, &config, &enabled, &wi.CreatedAt); err != nil {
+			return nil, err
+		}
+		wi.Enabled = enabled != 0
+		if config != "" {
+			wi.Config = json.RawMessage(config)
+		}
+		out = append(out, wi)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) GetWorkspaceIntegration(ctx context.Context, workspaceID, integrationID string) (*proto.WorkspaceIntegration, error) {
+	wi := &proto.WorkspaceIntegration{}
+	var config string
+	var enabled int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, integration_id, installed_by, config, enabled, created_at FROM workspace_integrations WHERE workspace_id = ? AND integration_id = ?`,
+		workspaceID, integrationID).Scan(&wi.ID, &wi.WorkspaceID, &wi.IntegrationID, &wi.InstalledBy, &config, &enabled, &wi.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	wi.Enabled = enabled != 0
+	if config != "" {
+		wi.Config = json.RawMessage(config)
+	}
+	return wi, nil
+}
+
+// --- SSO Providers ---
+
+func (s *SQLiteStore) CreateSSOProvider(ctx context.Context, p *proto.SSOProvider) error {
+	if p.ID == "" {
+		p.ID = uuid.New().String()
+	}
+	if p.CreatedAt == 0 {
+		p.CreatedAt = time.Now().UnixMilli()
+	}
+	enabled := 0
+	if p.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sso_providers (id, workspace_id, name, type, issuer, client_id, client_secret, discovery_url, domain, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.WorkspaceID, p.Name, string(p.Type), p.Issuer, p.ClientID, p.ClientSecret, p.DiscoveryURL, p.Domain, enabled, p.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetSSOProvider(ctx context.Context, id string) (*proto.SSOProvider, error) {
+	p := &proto.SSOProvider{}
+	var pType string
+	var enabled int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, name, type, issuer, client_id, client_secret, discovery_url, domain, enabled, created_at FROM sso_providers WHERE id = ?`, id).
+		Scan(&p.ID, &p.WorkspaceID, &p.Name, &pType, &p.Issuer, &p.ClientID, &p.ClientSecret, &p.DiscoveryURL, &p.Domain, &enabled, &p.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.Type = proto.SSOProviderType(pType)
+	p.Enabled = enabled != 0
+	return p, nil
+}
+
+func (s *SQLiteStore) ListSSOProviders(ctx context.Context, workspaceID string) ([]*proto.SSOProvider, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, name, type, issuer, client_id, client_secret, discovery_url, domain, enabled, created_at FROM sso_providers WHERE workspace_id = ? ORDER BY name`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.SSOProvider
+	for rows.Next() {
+		p := &proto.SSOProvider{}
+		var pType string
+		var enabled int
+		if err := rows.Scan(&p.ID, &p.WorkspaceID, &p.Name, &pType, &p.Issuer, &p.ClientID, &p.ClientSecret, &p.DiscoveryURL, &p.Domain, &enabled, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		p.Type = proto.SSOProviderType(pType)
+		p.Enabled = enabled != 0
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) DeleteSSOProvider(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sso_providers WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) GetSSOProviderByDomain(ctx context.Context, domain string) (*proto.SSOProvider, error) {
+	p := &proto.SSOProvider{}
+	var pType string
+	var enabled int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, name, type, issuer, client_id, client_secret, discovery_url, domain, enabled, created_at FROM sso_providers WHERE domain = ? AND enabled = 1`, domain).
+		Scan(&p.ID, &p.WorkspaceID, &p.Name, &pType, &p.Issuer, &p.ClientID, &p.ClientSecret, &p.DiscoveryURL, &p.Domain, &enabled, &p.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.Type = proto.SSOProviderType(pType)
+	p.Enabled = enabled != 0
+	return p, nil
+}
+
+// --- Calls ---
+
+func (s *SQLiteStore) CreateCall(ctx context.Context, c *proto.Call) error {
+	if c.ID == "" {
+		c.ID = uuid.New().String()
+	}
+	if c.CreatedAt == 0 {
+		c.CreatedAt = time.Now().UnixMilli()
+	}
+	var channelID any
+	if c.ChannelID != "" {
+		channelID = c.ChannelID
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO calls (id, workspace_id, channel_id, caller_id, callee_id, type, status, started_at, ended_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.WorkspaceID, channelID, c.CallerID, c.CalleeID, string(c.Type), string(c.Status), c.StartedAt, c.EndedAt, c.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetCall(ctx context.Context, id string) (*proto.Call, error) {
+	c := &proto.Call{}
+	var callType, status string
+	var channelID sql.NullString
+	var startedAt, endedAt sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, channel_id, caller_id, callee_id, type, status, started_at, ended_at, created_at FROM calls WHERE id = ?`, id).
+		Scan(&c.ID, &c.WorkspaceID, &channelID, &c.CallerID, &c.CalleeID, &callType, &status, &startedAt, &endedAt, &c.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.ChannelID = channelID.String
+	c.StartedAt = startedAt.Int64
+	c.EndedAt = endedAt.Int64
+	c.Type = proto.CallType(callType)
+	c.Status = proto.CallStatus(status)
+	return c, nil
+}
+
+func (s *SQLiteStore) UpdateCall(ctx context.Context, c *proto.Call) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE calls SET status=?, started_at=?, ended_at=? WHERE id=?`,
+		string(c.Status), c.StartedAt, c.EndedAt, c.ID)
+	return err
+}
+
+func (s *SQLiteStore) ListCalls(ctx context.Context, memberID string, limit int) ([]*proto.Call, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, channel_id, caller_id, callee_id, type, status, started_at, ended_at, created_at FROM calls WHERE caller_id = ? OR callee_id = ? ORDER BY created_at DESC LIMIT ?`,
+		memberID, memberID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.Call
+	for rows.Next() {
+		c := &proto.Call{}
+		var callType, status string
+		var channelID sql.NullString
+		var startedAt, endedAt sql.NullInt64
+		if err := rows.Scan(&c.ID, &c.WorkspaceID, &channelID, &c.CallerID, &c.CalleeID, &callType, &status, &startedAt, &endedAt, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		c.ChannelID = channelID.String
+		c.StartedAt = startedAt.Int64
+		c.EndedAt = endedAt.Int64
+		c.Type = proto.CallType(callType)
+		c.Status = proto.CallStatus(status)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// --- Workflows ---
+
+func (s *SQLiteStore) CreateWorkflow(ctx context.Context, w *proto.Workflow) error {
+	if w.ID == "" {
+		w.ID = uuid.New().String()
+	}
+	now := time.Now().UnixMilli()
+	if w.CreatedAt == 0 {
+		w.CreatedAt = now
+	}
+	if w.UpdatedAt == 0 {
+		w.UpdatedAt = now
+	}
+	enabled := 0
+	if w.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO workflows (id, workspace_id, name, description, trigger_type, trigger_config, steps, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.ID, w.WorkspaceID, w.Name, w.Description, w.TriggerType, string(w.TriggerConfig), string(w.Steps), enabled, w.CreatedBy, w.CreatedAt, w.UpdatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetWorkflow(ctx context.Context, id string) (*proto.Workflow, error) {
+	w := &proto.Workflow{}
+	var triggerConfig, steps string
+	var enabled int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, name, description, trigger_type, trigger_config, steps, enabled, created_by, created_at, updated_at FROM workflows WHERE id = ?`, id).
+		Scan(&w.ID, &w.WorkspaceID, &w.Name, &w.Description, &w.TriggerType, &triggerConfig, &steps, &enabled, &w.CreatedBy, &w.CreatedAt, &w.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	w.Enabled = enabled != 0
+	if triggerConfig != "" {
+		w.TriggerConfig = json.RawMessage(triggerConfig)
+	}
+	if steps != "" {
+		w.Steps = json.RawMessage(steps)
+	}
+	return w, nil
+}
+
+func (s *SQLiteStore) ListWorkflows(ctx context.Context, workspaceID string) ([]*proto.Workflow, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, name, description, trigger_type, trigger_config, steps, enabled, created_by, created_at, updated_at FROM workflows WHERE workspace_id = ? ORDER BY name`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.Workflow
+	for rows.Next() {
+		w := &proto.Workflow{}
+		var triggerConfig, steps string
+		var enabled int
+		if err := rows.Scan(&w.ID, &w.WorkspaceID, &w.Name, &w.Description, &w.TriggerType, &triggerConfig, &steps, &enabled, &w.CreatedBy, &w.CreatedAt, &w.UpdatedAt); err != nil {
+			return nil, err
+		}
+		w.Enabled = enabled != 0
+		if triggerConfig != "" {
+			w.TriggerConfig = json.RawMessage(triggerConfig)
+		}
+		if steps != "" {
+			w.Steps = json.RawMessage(steps)
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateWorkflow(ctx context.Context, w *proto.Workflow) error {
+	w.UpdatedAt = time.Now().UnixMilli()
+	enabled := 0
+	if w.Enabled {
+		enabled = 1
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE workflows SET name=?, description=?, trigger_type=?, trigger_config=?, steps=?, enabled=?, updated_at=? WHERE id=?`,
+		w.Name, w.Description, w.TriggerType, string(w.TriggerConfig), string(w.Steps), enabled, w.UpdatedAt, w.ID)
+	return err
+}
+
+func (s *SQLiteStore) DeleteWorkflow(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM workflows WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) CreateWorkflowRun(ctx context.Context, r *proto.WorkflowRun) error {
+	if r.ID == "" {
+		r.ID = uuid.New().String()
+	}
+	if r.StartedAt == 0 {
+		r.StartedAt = time.Now().UnixMilli()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO workflow_runs (id, workflow_id, status, trigger_data, result, error, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.WorkflowID, string(r.Status), string(r.TriggerData), string(r.Result), r.Error, r.StartedAt, r.FinishedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetWorkflowRun(ctx context.Context, id string) (*proto.WorkflowRun, error) {
+	r := &proto.WorkflowRun{}
+	var status, triggerData, result, runErr string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workflow_id, status, trigger_data, result, error, started_at, finished_at FROM workflow_runs WHERE id = ?`, id).
+		Scan(&r.ID, &r.WorkflowID, &status, &triggerData, &result, &runErr, &r.StartedAt, &r.FinishedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.Status = proto.WorkflowRunStatus(status)
+	r.Error = runErr
+	if triggerData != "" {
+		r.TriggerData = json.RawMessage(triggerData)
+	}
+	if result != "" {
+		r.Result = json.RawMessage(result)
+	}
+	return r, nil
+}
+
+func (s *SQLiteStore) UpdateWorkflowRun(ctx context.Context, r *proto.WorkflowRun) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE workflow_runs SET status=?, result=?, error=?, finished_at=? WHERE id=?`,
+		string(r.Status), string(r.Result), r.Error, r.FinishedAt, r.ID)
+	return err
+}
+
+func (s *SQLiteStore) ListWorkflowRuns(ctx context.Context, workflowID string, limit int) ([]*proto.WorkflowRun, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workflow_id, status, trigger_data, result, error, started_at, finished_at FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT ?`,
+		workflowID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.WorkflowRun
+	for rows.Next() {
+		r := &proto.WorkflowRun{}
+		var status, triggerData, result, runErr string
+		if err := rows.Scan(&r.ID, &r.WorkflowID, &status, &triggerData, &result, &runErr, &r.StartedAt, &r.FinishedAt); err != nil {
+			return nil, err
+		}
+		r.Status = proto.WorkflowRunStatus(status)
+		r.Error = runErr
+		if triggerData != "" {
+			r.TriggerData = json.RawMessage(triggerData)
+		}
+		if result != "" {
+			r.Result = json.RawMessage(result)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// --- E2EE Key Management ---
+
+func (s *SQLiteStore) RegisterUserKey(ctx context.Context, k *proto.UserKey) error {
+	if k.ID == "" {
+		k.ID = uuid.New().String()
+	}
+	if k.CreatedAt == 0 {
+		k.CreatedAt = time.Now().UnixMilli()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO user_keys (id, member_id, key_type, public_key, private_key, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		k.ID, k.MemberID, string(k.KeyType), k.PublicKey, k.PrivateKey, k.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetUserKeys(ctx context.Context, memberID string, keyType proto.UserKeyType) ([]*proto.UserKey, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, member_id, key_type, public_key, created_at FROM user_keys WHERE member_id = ? AND key_type = ? ORDER BY created_at DESC`, memberID, string(keyType))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.UserKey
+	for rows.Next() {
+		k := &proto.UserKey{}
+		var kType string
+		if err := rows.Scan(&k.ID, &k.MemberID, &kType, &k.PublicKey, &k.CreatedAt); err != nil {
+			return nil, err
+		}
+		k.KeyType = proto.UserKeyType(kType)
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) GetUserKey(ctx context.Context, id string) (*proto.UserKey, error) {
+	k := &proto.UserKey{}
+	var kType string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, member_id, key_type, public_key, created_at FROM user_keys WHERE id = ?`, id).
+		Scan(&k.ID, &k.MemberID, &kType, &k.PublicKey, &k.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	k.KeyType = proto.UserKeyType(kType)
+	return k, nil
+}
+
+func (s *SQLiteStore) DeleteUserKey(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM user_keys WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteUserKeysByMember(ctx context.Context, memberID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM user_keys WHERE member_id = ?`, memberID)
+	return err
+}
+
+// --- E2EE Encrypted Messages ---
+
+func (s *SQLiteStore) CreateEncryptedMessage(ctx context.Context, m *proto.EncryptedMessage) error {
+	if m.ID == "" {
+		m.ID = uuid.New().String()
+	}
+	if m.CreatedAt == 0 {
+		m.CreatedAt = time.Now().UnixMilli()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO encrypted_messages (id, message_id, recipient_id, encrypted_content, sender_identity_key, ephemeral_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.ID, m.MessageID, m.RecipientID, m.EncryptedContent, m.SenderIdentityKey, m.EphemeralKey, m.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetEncryptedMessages(ctx context.Context, messageID string, recipientID string) ([]*proto.EncryptedMessage, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, message_id, recipient_id, encrypted_content, sender_identity_key, ephemeral_key, created_at FROM encrypted_messages WHERE message_id = ? AND recipient_id = ?`, messageID, recipientID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.EncryptedMessage
+	for rows.Next() {
+		m := &proto.EncryptedMessage{}
+		if err := rows.Scan(&m.ID, &m.MessageID, &m.RecipientID, &m.EncryptedContent, &m.SenderIdentityKey, &m.EphemeralKey, &m.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) GetEncryptedMessageForRecipient(ctx context.Context, messageID, recipientID string) (*proto.EncryptedMessage, error) {
+	m := &proto.EncryptedMessage{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, message_id, recipient_id, encrypted_content, sender_identity_key, ephemeral_key, created_at FROM encrypted_messages WHERE message_id = ? AND recipient_id = ?`, messageID, recipientID).
+		Scan(&m.ID, &m.MessageID, &m.RecipientID, &m.EncryptedContent, &m.SenderIdentityKey, &m.EphemeralKey, &m.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// --- Billing ---
+
+func (s *SQLiteStore) CreateBillingCustomer(ctx context.Context, c *proto.BillingCustomer) error {
+	if c.ID == "" {
+		c.ID = uuid.New().String()
+	}
+	now := time.Now().UnixMilli()
+	if c.CreatedAt == 0 {
+		c.CreatedAt = now
+	}
+	if c.UpdatedAt == 0 {
+		c.UpdatedAt = now
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO billing_customers (id, workspace_id, stripe_customer_id, stripe_subscription_id, plan, status, current_period_start, current_period_end, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.ID, c.WorkspaceID, c.StripeCustomerID, c.StripeSubscriptionID, string(c.Plan), string(c.Status), c.CurrentPeriodStart, c.CurrentPeriodEnd, c.CreatedAt, c.UpdatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetBillingCustomer(ctx context.Context, workspaceID string) (*proto.BillingCustomer, error) {
+	c := &proto.BillingCustomer{}
+	var plan, status string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, stripe_customer_id, stripe_subscription_id, plan, status, current_period_start, current_period_end, created_at, updated_at FROM billing_customers WHERE workspace_id = ?`, workspaceID).
+		Scan(&c.ID, &c.WorkspaceID, &c.StripeCustomerID, &c.StripeSubscriptionID, &plan, &status, &c.CurrentPeriodStart, &c.CurrentPeriodEnd, &c.CreatedAt, &c.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.Plan = proto.BillingPlan(plan)
+	c.Status = proto.BillingStatus(status)
+	return c, nil
+}
+
+func (s *SQLiteStore) GetBillingCustomerByStripeID(ctx context.Context, stripeCustomerID string) (*proto.BillingCustomer, error) {
+	c := &proto.BillingCustomer{}
+	var plan, status string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, stripe_customer_id, stripe_subscription_id, plan, status, current_period_start, current_period_end, created_at, updated_at FROM billing_customers WHERE stripe_customer_id = ?`, stripeCustomerID).
+		Scan(&c.ID, &c.WorkspaceID, &c.StripeCustomerID, &c.StripeSubscriptionID, &plan, &status, &c.CurrentPeriodStart, &c.CurrentPeriodEnd, &c.CreatedAt, &c.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.Plan = proto.BillingPlan(plan)
+	c.Status = proto.BillingStatus(status)
+	return c, nil
+}
+
+func (s *SQLiteStore) UpdateBillingCustomer(ctx context.Context, c *proto.BillingCustomer) error {
+	c.UpdatedAt = time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE billing_customers SET stripe_customer_id=?, stripe_subscription_id=?, plan=?, status=?, current_period_start=?, current_period_end=?, updated_at=? WHERE workspace_id=?`,
+		c.StripeCustomerID, c.StripeSubscriptionID, string(c.Plan), string(c.Status), c.CurrentPeriodStart, c.CurrentPeriodEnd, c.UpdatedAt, c.WorkspaceID)
+	return err
+}
+
+func (s *SQLiteStore) DeleteBillingCustomer(ctx context.Context, workspaceID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM billing_customers WHERE workspace_id = ?`, workspaceID)
+	return err
+}
+
+// --- Usage Tracking ---
+
+func (s *SQLiteStore) CreateUsageRecord(ctx context.Context, r *proto.UsageRecord) error {
+	if r.ID == "" {
+		r.ID = uuid.New().String()
+	}
+	if r.CreatedAt == 0 {
+		r.CreatedAt = time.Now().UnixMilli()
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO usage_records (id, workspace_id, metric, quantity, period_start, period_end, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.WorkspaceID, r.Metric, r.Quantity, r.PeriodStart, r.PeriodEnd, r.CreatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetUsageRecord(ctx context.Context, workspaceID, metric string, periodStart int64) (*proto.UsageRecord, error) {
+	r := &proto.UsageRecord{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, metric, quantity, period_start, period_end, created_at FROM usage_records WHERE workspace_id = ? AND metric = ? AND period_start = ?`,
+		workspaceID, metric, periodStart).
+		Scan(&r.ID, &r.WorkspaceID, &r.Metric, &r.Quantity, &r.PeriodStart, &r.PeriodEnd, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (s *SQLiteStore) IncrementUsage(ctx context.Context, workspaceID, metric string, periodStart, periodEnd int64, delta int) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO usage_records (id, workspace_id, metric, quantity, period_start, period_end, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(workspace_id, metric, period_start) DO UPDATE SET quantity = quantity + ?`,
+		uuid.New().String(), workspaceID, metric, delta, periodStart, periodEnd, time.Now().UnixMilli(), delta)
+	return err
+}
+
+func (s *SQLiteStore) ListUsageRecords(ctx context.Context, workspaceID string) ([]*proto.UsageRecord, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, workspace_id, metric, quantity, period_start, period_end, created_at FROM usage_records WHERE workspace_id = ? ORDER BY period_start DESC, metric`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*proto.UsageRecord
+	for rows.Next() {
+		r := &proto.UsageRecord{}
+		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.Metric, &r.Quantity, &r.PeriodStart, &r.PeriodEnd, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }

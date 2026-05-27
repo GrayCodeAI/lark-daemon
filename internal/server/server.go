@@ -24,13 +24,14 @@ import (
 
 // Server is the main Lark server.
 type Server struct {
-	config    *Config
-	store     store.Store
-	hub       *websocket.Hub
-	router    *api.Router
-	services  *service.Services
-	logger    *slog.Logger
-	collector *metrics.Collector
+	config      *Config
+	store       store.Store
+	hub         *websocket.Hub
+	router      *api.Router
+	services    *service.Services
+	logger      *slog.Logger
+	collector   *metrics.Collector
+	rateLimiter *api.RateLimiter
 }
 
 
@@ -85,34 +86,64 @@ func New(cfg Config) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("storage init: %w", err)
 	}
-	var oauthCfg *oauth2.Config
+	scheme := "http"
+	if cfg.TLSCert != "" {
+		scheme = "https"
+	}
+
+	var githubOAuthCfg *oauth2.Config
 	if cfg.GithubClientID != "" && cfg.GithubSecret != "" {
-		scheme := "http"
-		if cfg.TLSCert != "" {
-			scheme = "https"
-		}
-		redirectURL := fmt.Sprintf("%s://%s:%d/v1/auth/github/callback", scheme, cfg.Host, cfg.Port)
-		oauthCfg = &oauth2.Config{
+		githubOAuthCfg = &oauth2.Config{
 			ClientID:     cfg.GithubClientID,
 			ClientSecret: cfg.GithubSecret,
 			Endpoint: oauth2.Endpoint{
 				AuthURL:  "https://github.com/login/oauth/authorize",
 				TokenURL: "https://github.com/login/oauth/access_token",
 			},
-			RedirectURL: redirectURL,
+			RedirectURL: fmt.Sprintf("%s://%s:%d/v1/auth/github/callback", scheme, cfg.Host, cfg.Port),
 			Scopes:      []string{"read:user", "user:email"},
 		}
 	}
-	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin, collector, rl, storeBackend, oauthCfg)
+
+	var googleOAuthCfg *oauth2.Config
+	if cfg.GoogleClientID != "" && cfg.GoogleSecret != "" {
+		googleOAuthCfg = &oauth2.Config{
+			ClientID:     cfg.GoogleClientID,
+			ClientSecret: cfg.GoogleSecret,
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
+				TokenURL: "https://oauth2.googleapis.com/token",
+			},
+			RedirectURL: fmt.Sprintf("%s://%s:%d/v1/auth/google/callback", scheme, cfg.Host, cfg.Port),
+			Scopes:      []string{"openid", "email", "profile"},
+		}
+	}
+
+	var microsoftOAuthCfg *oauth2.Config
+	if cfg.MicrosoftClientID != "" && cfg.MicrosoftSecret != "" {
+		microsoftOAuthCfg = &oauth2.Config{
+			ClientID:     cfg.MicrosoftClientID,
+			ClientSecret: cfg.MicrosoftSecret,
+			Endpoint: oauth2.Endpoint{
+				AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+				TokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+			},
+			RedirectURL: fmt.Sprintf("%s://%s:%d/v1/auth/microsoft/callback", scheme, cfg.Host, cfg.Port),
+			Scopes:      []string{"openid", "email", "profile"},
+		}
+	}
+
+	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin, collector, rl, storeBackend, githubOAuthCfg, googleOAuthCfg, microsoftOAuthCfg)
 
 	return &Server{
-		config:    &cfg,
-		store:     db,
-		hub:       hub,
-		router:    router,
-		services:  services,
-		logger:    logger,
-		collector: collector,
+		config:      &cfg,
+		store:       db,
+		hub:         hub,
+		router:      router,
+		services:    services,
+		logger:      logger,
+		collector:   collector,
+		rateLimiter: rl,
 	}, nil
 }
 
@@ -171,6 +202,7 @@ func (s *Server) Run() error {
 
 // Close closes the server and its resources.
 func (s *Server) Close() error {
+	s.rateLimiter.Stop()
 	s.hub.Close()
 	return s.store.Close()
 }

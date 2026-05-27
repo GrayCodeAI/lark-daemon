@@ -69,6 +69,15 @@ type Workspace struct {
 	UpdatedAt           int64  `json:"updated_at"`
 }
 
+// MemberRole defines access levels within a workspace.
+type MemberRole string
+
+const (
+	RoleUser  MemberRole = "user"
+	RoleAdmin MemberRole = "admin"
+	RoleOwner MemberRole = "owner"
+)
+
 // Member represents a human or agent.
 type Member struct {
 	ID           string       `json:"id"`
@@ -77,8 +86,11 @@ type Member struct {
 	Email        string       `json:"email,omitempty"`
 	PasswordHash string       `json:"-"`
 	Type         MemberType   `json:"type"`
+	Role         MemberRole   `json:"role"`
 	AvatarURL    string       `json:"avatar_url,omitempty"`
 	Status       Presence     `json:"status"`
+	StatusText   string       `json:"status_text,omitempty"`
+	StatusEmoji  string       `json:"status_emoji,omitempty"`
 	APIKey       string       `json:"api_key,omitempty"`
 	RoleCard     *RoleCard    `json:"role_card,omitempty"`
 	Capabilities []string     `json:"capabilities,omitempty"`
@@ -92,6 +104,7 @@ type Channel struct {
 	ID          string      `json:"id"`
 	WorkspaceID string      `json:"workspace_id"`
 	Name        string      `json:"name"`
+	Category    string      `json:"category,omitempty"`
 	Type        ChannelType `json:"type"`
 	Topic       string      `json:"topic,omitempty"`
 	IsPrivate   bool        `json:"is_private"`
@@ -110,18 +123,30 @@ type ChannelMember struct {
 
 // Message represents a chat message.
 type Message struct {
-	ID        string          `json:"id"`
-	ChannelID string          `json:"channel_id"`
-	SenderID  string          `json:"sender_id"`
-	ThreadID  string          `json:"thread_id,omitempty"`
-	Content   string          `json:"content"`
-	FileID    string          `json:"file_id,omitempty"`
-	Type      string          `json:"type"`
-	Metadata  json.RawMessage `json:"metadata,omitempty"`
-	EditedAt  int64           `json:"edited_at,omitempty"`
-	EditCount int             `json:"edit_count,omitempty"`
-	CreatedAt int64           `json:"created_at"`
-	UpdatedAt int64           `json:"updated_at"`
+	ID          string          `json:"id"`
+	ChannelID   string          `json:"channel_id"`
+	SenderID    string          `json:"sender_id"`
+	ThreadID    string          `json:"thread_id,omitempty"`
+	Content     string          `json:"content"`
+	ContentType string          `json:"content_type,omitempty"`
+	FileID      string          `json:"file_id,omitempty"`
+	Type        string          `json:"type"`
+	Metadata    json.RawMessage `json:"metadata,omitempty"`
+	EditedAt    int64           `json:"edited_at,omitempty"`
+	EditCount   int             `json:"edit_count,omitempty"`
+	ReplyCount  int             `json:"reply_count,omitempty"`
+	CreatedAt   int64           `json:"created_at"`
+	UpdatedAt   int64           `json:"updated_at"`
+}
+
+// Bookmark represents a saved/bookmarked message for a user.
+type Bookmark struct {
+	ID        string `json:"id"`
+	UserID    string `json:"user_id"`
+	MessageID string `json:"message_id"`
+	ChannelID string `json:"channel_id"`
+	Note      string `json:"note,omitempty"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // Pin represents a pinned message.
@@ -234,3 +259,274 @@ type RuntimeInfo struct {
 	Model    string `json:"model"`
 }
 
+// EditHistory stores previous versions of edited messages.
+type EditHistory struct {
+	ID        string `json:"id"`
+	MessageID string `json:"message_id"`
+	Content   string `json:"content"`
+	EditedAt  int64  `json:"edited_at"`
+	EditedBy  string `json:"edited_by"`
+}
+
+// OAuthIdentity links an external OAuth provider account to a member.
+type OAuthIdentity struct {
+	ID             string `json:"id"`
+	MemberID       string `json:"member_id"`
+	Provider       string `json:"provider"`
+	ProviderUserID string `json:"provider_user_id"`
+	Email          string `json:"email,omitempty"`
+	CreatedAt      int64  `json:"created_at"`
+}
+
+// Notification represents an in-app notification for a member.
+type Notification struct {
+	ID        string `json:"id"`
+	MemberID  string `json:"member_id"`
+	Type      string `json:"type"`
+	Title     string `json:"title"`
+	Body      string `json:"body,omitempty"`
+	ChannelID string `json:"channel_id,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+	IsRead    bool   `json:"is_read"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// IntegrationType defines integration types.
+type IntegrationType string
+
+const (
+	IntegrationWebhook IntegrationType = "webhook"
+	IntegrationBot     IntegrationType = "bot"
+	IntegrationOAuth   IntegrationType = "oauth"
+	IntegrationCustom  IntegrationType = "custom"
+)
+
+// Integration represents an available integration.
+type Integration struct {
+	ID            string          `json:"id"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description,omitempty"`
+	IconURL       string          `json:"icon_url,omitempty"`
+	Type          IntegrationType `json:"type"`
+	ConfigSchema  json.RawMessage `json:"config_schema,omitempty"`
+	CreatedAt     int64           `json:"created_at"`
+}
+
+// WorkspaceIntegration represents an installed integration in a workspace.
+type WorkspaceIntegration struct {
+	ID            string          `json:"id"`
+	WorkspaceID   string          `json:"workspace_id"`
+	IntegrationID string          `json:"integration_id"`
+	InstalledBy   string          `json:"installed_by"`
+	Config        json.RawMessage `json:"config,omitempty"`
+	Enabled       bool            `json:"enabled"`
+	CreatedAt     int64           `json:"created_at"`
+}
+
+// SSOProviderType defines SSO protocol types.
+type SSOProviderType string
+
+const (
+	SSOOIDC SSOProviderType = "oidc"
+	SSOSAML SSOProviderType = "saml"
+)
+
+// SSOProvider represents a configured SSO provider for a workspace.
+type SSOProvider struct {
+	ID           string          `json:"id"`
+	WorkspaceID  string          `json:"workspace_id"`
+	Name         string          `json:"name"`
+	Type         SSOProviderType `json:"type"`
+	Issuer       string          `json:"issuer,omitempty"`
+	ClientID     string          `json:"client_id,omitempty"`
+	ClientSecret string          `json:"-"`
+	DiscoveryURL string          `json:"discovery_url,omitempty"`
+	Domain       string          `json:"domain,omitempty"`
+	Enabled      bool            `json:"enabled"`
+	CreatedAt    int64           `json:"created_at"`
+}
+
+// CallStatus defines call states.
+type CallStatus string
+
+const (
+	CallRinging CallStatus = "ringing"
+	CallAnswered CallStatus = "answered"
+	CallEnded   CallStatus = "ended"
+	CallMissed  CallStatus = "missed"
+)
+
+// CallType defines call media types.
+type CallType string
+
+const (
+	CallAudio CallType = "audio"
+	CallVideo CallType = "video"
+)
+
+// Call represents a 1:1 call between two members.
+type Call struct {
+	ID          string     `json:"id"`
+	WorkspaceID string     `json:"workspace_id"`
+	ChannelID   string     `json:"channel_id,omitempty"`
+	CallerID    string     `json:"caller_id"`
+	CalleeID    string     `json:"callee_id"`
+	Type        CallType   `json:"type"`
+	Status      CallStatus `json:"status"`
+	StartedAt   int64      `json:"started_at,omitempty"`
+	EndedAt     int64      `json:"ended_at,omitempty"`
+	CreatedAt   int64      `json:"created_at"`
+}
+
+// Workflow represents an automation workflow.
+type Workflow struct {
+	ID           string          `json:"id"`
+	WorkspaceID  string          `json:"workspace_id"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	TriggerType  string          `json:"trigger_type"`
+	TriggerConfig json.RawMessage `json:"trigger_config,omitempty"`
+	Steps        json.RawMessage `json:"steps"`
+	Enabled      bool            `json:"enabled"`
+	CreatedBy    string          `json:"created_by"`
+	CreatedAt    int64           `json:"created_at"`
+	UpdatedAt    int64           `json:"updated_at"`
+}
+
+// WorkflowRunStatus defines workflow run states.
+type WorkflowRunStatus string
+
+const (
+	WfRunRunning   WorkflowRunStatus = "running"
+	WfRunCompleted WorkflowRunStatus = "completed"
+	WfRunFailed    WorkflowRunStatus = "failed"
+)
+
+// WorkflowRun represents an execution of a workflow.
+type WorkflowRun struct {
+	ID          string            `json:"id"`
+	WorkflowID  string            `json:"workflow_id"`
+	Status      WorkflowRunStatus `json:"status"`
+	TriggerData json.RawMessage   `json:"trigger_data,omitempty"`
+	Result      json.RawMessage   `json:"result,omitempty"`
+	Error       string            `json:"error,omitempty"`
+	StartedAt   int64             `json:"started_at"`
+	FinishedAt  int64             `json:"finished_at,omitempty"`
+}
+
+// UserKeyType defines the type of cryptographic key.
+type UserKeyType string
+
+const (
+	KeyIdentity    UserKeyType = "identity"
+	KeySignedPre   UserKeyType = "signed_pre"
+	KeyOneTime     UserKeyType = "one_time"
+)
+
+// UserKey represents a registered public key for E2EE.
+type UserKey struct {
+	ID         string      `json:"id"`
+	MemberID   string      `json:"member_id"`
+	KeyType    UserKeyType `json:"key_type"`
+	PublicKey  string      `json:"public_key"`
+	PrivateKey string      `json:"-"`
+	CreatedAt  int64       `json:"created_at"`
+}
+
+// EncryptedMessage represents an encrypted message payload for a recipient.
+type EncryptedMessage struct {
+	ID                 string `json:"id"`
+	MessageID          string `json:"message_id"`
+	RecipientID        string `json:"recipient_id"`
+	EncryptedContent   string `json:"encrypted_content"`
+	SenderIdentityKey  string `json:"sender_identity_key"`
+	EphemeralKey       string `json:"ephemeral_key,omitempty"`
+	CreatedAt          int64  `json:"created_at"`
+}
+
+// BillingPlan defines subscription plan types.
+type BillingPlan string
+
+const (
+	PlanFree       BillingPlan = "free"
+	PlanPro        BillingPlan = "pro"
+	PlanEnterprise BillingPlan = "enterprise"
+)
+
+// BillingStatus defines subscription status.
+type BillingStatus string
+
+const (
+	BillingActive   BillingStatus = "active"
+	BillingPastDue  BillingStatus = "past_due"
+	BillingCanceled BillingStatus = "canceled"
+	BillingTrialing BillingStatus = "trialing"
+)
+
+// BillingCustomer represents a workspace's billing relationship.
+type BillingCustomer struct {
+	ID                   string        `json:"id"`
+	WorkspaceID          string        `json:"workspace_id"`
+	StripeCustomerID     string        `json:"stripe_customer_id,omitempty"`
+	StripeSubscriptionID string        `json:"stripe_subscription_id,omitempty"`
+	Plan                 BillingPlan   `json:"plan"`
+	Status               BillingStatus `json:"status"`
+	CurrentPeriodStart   int64         `json:"current_period_start,omitempty"`
+	CurrentPeriodEnd     int64         `json:"current_period_end,omitempty"`
+	CreatedAt            int64         `json:"created_at"`
+	UpdatedAt            int64         `json:"updated_at"`
+}
+
+// UsageRecord tracks a metric for a workspace in a billing period.
+type UsageRecord struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Metric      string `json:"metric"`
+	Quantity    int    `json:"quantity"`
+	PeriodStart int64  `json:"period_start"`
+	PeriodEnd   int64  `json:"period_end"`
+	CreatedAt   int64  `json:"created_at"`
+}
+
+// PlanLimits defines what each plan allows.
+type PlanLimits struct {
+	MaxMembers    int `json:"max_members"`
+	MaxChannels   int `json:"max_channels"`
+	MaxMessages   int `json:"max_messages_per_month"`
+	MaxFileUpload int `json:"max_file_upload_mb"`
+	MaxWorkflows  int `json:"max_workflows"`
+	MaxAgents     int `json:"max_agents"`
+}
+
+// GetPlanLimits returns limits for a given plan.
+func GetPlanLimits(plan BillingPlan) PlanLimits {
+	switch plan {
+	case PlanPro:
+		return PlanLimits{
+			MaxMembers:    100,
+			MaxChannels:   500,
+			MaxMessages:   100000,
+			MaxFileUpload: 100,
+			MaxWorkflows:  50,
+			MaxAgents:     20,
+		}
+	case PlanEnterprise:
+		return PlanLimits{
+			MaxMembers:    10000,
+			MaxChannels:   50000,
+			MaxMessages:   10000000,
+			MaxFileUpload: 1000,
+			MaxWorkflows:  1000,
+			MaxAgents:     500,
+		}
+	default: // free
+		return PlanLimits{
+			MaxMembers:    10,
+			MaxChannels:   20,
+			MaxMessages:   5000,
+			MaxFileUpload: 10,
+			MaxWorkflows:  3,
+			MaxAgents:     2,
+		}
+	}
+}

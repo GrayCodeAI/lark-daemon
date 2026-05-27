@@ -162,8 +162,8 @@ func (s *Services) ListReactions(ctx context.Context, messageID string) ([]*prot
 
 // --- Search ---
 
-func (s *Services) SearchMessages(ctx context.Context, query, channelID string, limit int) ([]*proto.Message, error) {
-	return s.store.SearchMessages(ctx, query, channelID, limit)
+func (s *Services) SearchMessages(ctx context.Context, query, channelID, workspaceID string, limit int) ([]*proto.Message, error) {
+	return s.store.SearchMessages(ctx, query, channelID, workspaceID, limit)
 }
 
 func (s *Services) SearchChannels(ctx context.Context, workspaceID, query string, limit int) ([]*proto.Channel, error) {
@@ -242,6 +242,10 @@ func (s *Services) ListPins(ctx context.Context, channelID string) ([]*proto.Pin
 	return s.store.ListPins(ctx, channelID)
 }
 
+func (s *Services) ListPinsByMessage(ctx context.Context, messageID string) ([]*proto.Pin, error) {
+	return s.store.ListPinsByMessage(ctx, messageID)
+}
+
 // --- DMs ---
 
 func (s *Services) GetDMChannel(ctx context.Context, workspaceID string, memberIDs []string) (*proto.Channel, error) {
@@ -301,4 +305,234 @@ func (s *Services) ListWebhooks(ctx context.Context, workspaceID string) ([]*pro
 
 func (s *Services) DeleteWebhook(ctx context.Context, id string) error {
 	return s.store.DeleteWebhook(ctx, id)
+}
+
+// --- Edit History ---
+
+func (s *Services) CreateEditHistory(ctx context.Context, h *proto.EditHistory) error {
+	return s.store.CreateEditHistory(ctx, h)
+}
+
+func (s *Services) ListEditHistory(ctx context.Context, messageID string) ([]*proto.EditHistory, error) {
+	return s.store.ListEditHistory(ctx, messageID)
+}
+
+// --- OAuth Identities ---
+
+func (s *Services) CreateOAuthIdentity(ctx context.Context, o *proto.OAuthIdentity) error {
+	return s.store.CreateOAuthIdentity(ctx, o)
+}
+
+func (s *Services) GetOAuthIdentity(ctx context.Context, provider, providerUserID string) (*proto.OAuthIdentity, error) {
+	return s.store.GetOAuthIdentity(ctx, provider, providerUserID)
+}
+
+func (s *Services) GetOAuthIdentityByMember(ctx context.Context, memberID, provider string) (*proto.OAuthIdentity, error) {
+	return s.store.GetOAuthIdentityByMember(ctx, memberID, provider)
+}
+
+// --- Notifications ---
+
+func (s *Services) CreateNotification(ctx context.Context, n *proto.Notification) error {
+	return s.store.CreateNotification(ctx, n)
+}
+
+func (s *Services) ListNotifications(ctx context.Context, memberID string, unreadOnly bool, limit int) ([]*proto.Notification, error) {
+	return s.store.ListNotifications(ctx, memberID, unreadOnly, limit)
+}
+
+func (s *Services) MarkNotificationRead(ctx context.Context, id string) error {
+	return s.store.MarkNotificationRead(ctx, id)
+}
+
+func (s *Services) MarkAllNotificationsRead(ctx context.Context, memberID string) error {
+	return s.store.MarkAllNotificationsRead(ctx, memberID)
+}
+
+func (s *Services) CountUnreadNotifications(ctx context.Context, memberID string) (int, error) {
+	return s.store.CountUnreadNotifications(ctx, memberID)
+}
+
+// --- Integrations ---
+
+func (s *Services) CreateIntegration(ctx context.Context, i *proto.Integration) error {
+	return s.store.CreateIntegration(ctx, i)
+}
+
+func (s *Services) GetIntegration(ctx context.Context, id string) (*proto.Integration, error) {
+	return s.store.GetIntegration(ctx, id)
+}
+
+func (s *Services) ListIntegrations(ctx context.Context) ([]*proto.Integration, error) {
+	return s.store.ListIntegrations(ctx)
+}
+
+func (s *Services) InstallIntegration(ctx context.Context, wi *proto.WorkspaceIntegration) error {
+	return s.store.InstallIntegration(ctx, wi)
+}
+
+func (s *Services) UninstallIntegration(ctx context.Context, workspaceID, integrationID string) error {
+	return s.store.UninstallIntegration(ctx, workspaceID, integrationID)
+}
+
+func (s *Services) ListWorkspaceIntegrations(ctx context.Context, workspaceID string) ([]*proto.WorkspaceIntegration, error) {
+	return s.store.ListWorkspaceIntegrations(ctx, workspaceID)
+}
+
+func (s *Services) GetWorkspaceIntegration(ctx context.Context, workspaceID, integrationID string) (*proto.WorkspaceIntegration, error) {
+	return s.store.GetWorkspaceIntegration(ctx, workspaceID, integrationID)
+}
+
+// --- SSO Providers ---
+
+func (s *Services) CreateSSOProvider(ctx context.Context, p *proto.SSOProvider) error {
+	return s.store.CreateSSOProvider(ctx, p)
+}
+
+func (s *Services) GetSSOProvider(ctx context.Context, id string) (*proto.SSOProvider, error) {
+	return s.store.GetSSOProvider(ctx, id)
+}
+
+func (s *Services) ListSSOProviders(ctx context.Context, workspaceID string) ([]*proto.SSOProvider, error) {
+	return s.store.ListSSOProviders(ctx, workspaceID)
+}
+
+func (s *Services) DeleteSSOProvider(ctx context.Context, id string) error {
+	return s.store.DeleteSSOProvider(ctx, id)
+}
+
+func (s *Services) GetSSOProviderByDomain(ctx context.Context, domain string) (*proto.SSOProvider, error) {
+	return s.store.GetSSOProviderByDomain(ctx, domain)
+}
+
+// --- Calls ---
+
+func (s *Services) CreateCall(ctx context.Context, c *proto.Call) error {
+	return s.store.CreateCall(ctx, c)
+}
+
+func (s *Services) GetCall(ctx context.Context, id string) (*proto.Call, error) {
+	return s.store.GetCall(ctx, id)
+}
+
+func (s *Services) UpdateCall(ctx context.Context, c *proto.Call) error {
+	return s.store.UpdateCall(ctx, c)
+}
+
+func (s *Services) ListCalls(ctx context.Context, memberID string, limit int) ([]*proto.Call, error) {
+	return s.store.ListCalls(ctx, memberID, limit)
+}
+
+// --- Workflows ---
+
+func (s *Services) CreateWorkflow(ctx context.Context, w *proto.Workflow) error {
+	return s.store.CreateWorkflow(ctx, w)
+}
+
+func (s *Services) GetWorkflow(ctx context.Context, id string) (*proto.Workflow, error) {
+	return s.store.GetWorkflow(ctx, id)
+}
+
+func (s *Services) ListWorkflows(ctx context.Context, workspaceID string) ([]*proto.Workflow, error) {
+	return s.store.ListWorkflows(ctx, workspaceID)
+}
+
+func (s *Services) UpdateWorkflow(ctx context.Context, w *proto.Workflow) error {
+	return s.store.UpdateWorkflow(ctx, w)
+}
+
+func (s *Services) DeleteWorkflow(ctx context.Context, id string) error {
+	return s.store.DeleteWorkflow(ctx, id)
+}
+
+func (s *Services) CreateWorkflowRun(ctx context.Context, r *proto.WorkflowRun) error {
+	return s.store.CreateWorkflowRun(ctx, r)
+}
+
+func (s *Services) GetWorkflowRun(ctx context.Context, id string) (*proto.WorkflowRun, error) {
+	return s.store.GetWorkflowRun(ctx, id)
+}
+
+func (s *Services) UpdateWorkflowRun(ctx context.Context, r *proto.WorkflowRun) error {
+	return s.store.UpdateWorkflowRun(ctx, r)
+}
+
+func (s *Services) ListWorkflowRuns(ctx context.Context, workflowID string, limit int) ([]*proto.WorkflowRun, error) {
+	return s.store.ListWorkflowRuns(ctx, workflowID, limit)
+}
+
+// --- E2EE Key Management ---
+
+func (s *Services) RegisterUserKey(ctx context.Context, k *proto.UserKey) error {
+	return s.store.RegisterUserKey(ctx, k)
+}
+
+func (s *Services) GetUserKeys(ctx context.Context, memberID string, keyType proto.UserKeyType) ([]*proto.UserKey, error) {
+	return s.store.GetUserKeys(ctx, memberID, keyType)
+}
+
+func (s *Services) GetUserKey(ctx context.Context, id string) (*proto.UserKey, error) {
+	return s.store.GetUserKey(ctx, id)
+}
+
+func (s *Services) DeleteUserKey(ctx context.Context, id string) error {
+	return s.store.DeleteUserKey(ctx, id)
+}
+
+func (s *Services) DeleteUserKeysByMember(ctx context.Context, memberID string) error {
+	return s.store.DeleteUserKeysByMember(ctx, memberID)
+}
+
+// --- E2EE Encrypted Messages ---
+
+func (s *Services) CreateEncryptedMessage(ctx context.Context, m *proto.EncryptedMessage) error {
+	return s.store.CreateEncryptedMessage(ctx, m)
+}
+
+func (s *Services) GetEncryptedMessages(ctx context.Context, messageID string, recipientID string) ([]*proto.EncryptedMessage, error) {
+	return s.store.GetEncryptedMessages(ctx, messageID, recipientID)
+}
+
+func (s *Services) GetEncryptedMessageForRecipient(ctx context.Context, messageID, recipientID string) (*proto.EncryptedMessage, error) {
+	return s.store.GetEncryptedMessageForRecipient(ctx, messageID, recipientID)
+}
+
+// --- Billing ---
+
+func (s *Services) CreateBillingCustomer(ctx context.Context, c *proto.BillingCustomer) error {
+	return s.store.CreateBillingCustomer(ctx, c)
+}
+
+func (s *Services) GetBillingCustomer(ctx context.Context, workspaceID string) (*proto.BillingCustomer, error) {
+	return s.store.GetBillingCustomer(ctx, workspaceID)
+}
+
+func (s *Services) GetBillingCustomerByStripeID(ctx context.Context, stripeCustomerID string) (*proto.BillingCustomer, error) {
+	return s.store.GetBillingCustomerByStripeID(ctx, stripeCustomerID)
+}
+
+func (s *Services) UpdateBillingCustomer(ctx context.Context, c *proto.BillingCustomer) error {
+	return s.store.UpdateBillingCustomer(ctx, c)
+}
+
+func (s *Services) DeleteBillingCustomer(ctx context.Context, workspaceID string) error {
+	return s.store.DeleteBillingCustomer(ctx, workspaceID)
+}
+
+// --- Usage Tracking ---
+
+func (s *Services) CreateUsageRecord(ctx context.Context, r *proto.UsageRecord) error {
+	return s.store.CreateUsageRecord(ctx, r)
+}
+
+func (s *Services) GetUsageRecord(ctx context.Context, workspaceID, metric string, periodStart int64) (*proto.UsageRecord, error) {
+	return s.store.GetUsageRecord(ctx, workspaceID, metric, periodStart)
+}
+
+func (s *Services) IncrementUsage(ctx context.Context, workspaceID, metric string, periodStart, periodEnd int64, delta int) error {
+	return s.store.IncrementUsage(ctx, workspaceID, metric, periodStart, periodEnd, delta)
+}
+
+func (s *Services) ListUsageRecords(ctx context.Context, workspaceID string) ([]*proto.UsageRecord, error) {
+	return s.store.ListUsageRecords(ctx, workspaceID)
 }

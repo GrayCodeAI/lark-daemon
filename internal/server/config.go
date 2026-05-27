@@ -25,8 +25,12 @@ type Config struct {
 	S3Endpoint  string
 	S3Key       string
 	S3Secret    string
-	GithubClientID string
-	GithubSecret   string
+	GithubClientID    string
+	GithubSecret      string
+	GoogleClientID    string
+	GoogleSecret      string
+	MicrosoftClientID string
+	MicrosoftSecret   string
 }
 
 // LoadConfig loads configuration from environment variables.
@@ -51,6 +55,10 @@ func LoadConfig() *Config {
 		S3Secret:    getEnv("LARK_S3_SECRET", ""),
 		GithubClientID: getEnv("LARK_GITHUB_CLIENT_ID", ""),
 		GithubSecret:   getEnv("LARK_GITHUB_SECRET", ""),
+		GoogleClientID:    getEnv("LARK_GOOGLE_CLIENT_ID", ""),
+		GoogleSecret:      getEnv("LARK_GOOGLE_SECRET", ""),
+		MicrosoftClientID: getEnv("LARK_MICROSOFT_CLIENT_ID", ""),
+		MicrosoftSecret:   getEnv("LARK_MICROSOFT_SECRET", ""),
 	}
 	return cfg
 }

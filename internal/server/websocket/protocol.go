@@ -59,6 +59,15 @@ const (
 	EventChannelJoin   = "channel.join"
 	EventChannelLeave  = "channel.leave"
 
+	EventNotificationNew  = "notification.new"
+	EventNotificationRead = "notification.read"
+
+	EventCallOffer  = "call.offer"
+	EventCallAnswer = "call.answer"
+	EventCallICE    = "call.ice"
+	EventCallEnd    = "call.end"
+	EventCallRing   = "call.ring"
+
 	EventThreadReply = "thread.reply"
 
 	EventApprovalRequest = "approval.request"
@@ -111,11 +120,12 @@ type WakeContext struct {
 }
 
 type MessageSendData struct {
-	ChannelID string          `json:"channel_id"`
-	Content   string          `json:"content"`
-	ThreadID  string          `json:"thread_id,omitempty"`
-	Type      string          `json:"type,omitempty"`
-	Metadata  json.RawMessage `json:"metadata,omitempty"`
+	ChannelID   string          `json:"channel_id"`
+	Content     string          `json:"content"`
+	ThreadID    string          `json:"thread_id,omitempty"`
+	ContentType string          `json:"content_type,omitempty"`
+	Type        string          `json:"type,omitempty"`
+	Metadata    json.RawMessage `json:"metadata,omitempty"`
 }
 
 type TypingData struct {

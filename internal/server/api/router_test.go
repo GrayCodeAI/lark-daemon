@@ -45,7 +45,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	rl := NewRateLimiter(1000) // high limit for tests
 	str, _ := storage.NewStore(storage.Config{Type: "local", LocalDir: "/tmp/lark-test"})
 
-	router := NewRouter(svc, st, hub, auth, logger, ha, "*", collector, rl, str, nil)
+	router := NewRouter(svc, st, hub, auth, logger, ha, "*", collector, rl, str, nil, nil, nil)
 	ts := httptest.NewServer(router)
 	t.Cleanup(ts.Close)
 
@@ -139,7 +139,7 @@ func (e *testEnv) createAgent(t *testing.T) (string, string, string) {
 	wsID := e.createWorkspace(t, "ws-"+t.Name())
 	human := &proto.Member{WorkspaceID: wsID, Name: "admin", Type: proto.MemberHuman}
 	e.store.CreateMember(context.Background(), human)
-	token, _ := e.auth.GenerateToken(human.ID, wsID)
+	token, _, _ := e.auth.GenerateToken(human.ID, wsID)
 
 	// Create agent via API
 	body := `{"name":"agent1","type":"agent"}`

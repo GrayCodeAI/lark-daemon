@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS members (
     email TEXT,
     password_hash TEXT,
     type TEXT NOT NULL CHECK (type IN ('human', 'agent')),
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin', 'owner')),
     avatar_url TEXT,
     status TEXT DEFAULT 'offline',
     api_key TEXT UNIQUE,
@@ -29,6 +30,14 @@ CREATE TABLE IF NOT EXISTS members (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
+
+-- Token blacklist for JWT revocation
+CREATE TABLE IF NOT EXISTS token_blacklist (
+    jti TEXT PRIMARY KEY,
+    expires_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires ON token_blacklist(expires_at);
 
 -- Channels
 CREATE TABLE IF NOT EXISTS channels (
@@ -59,9 +68,11 @@ CREATE TABLE IF NOT EXISTS messages (
     sender_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
     thread_id TEXT REFERENCES messages(id),
     content TEXT NOT NULL,
+    content_type TEXT DEFAULT 'text',
     file_id TEXT,
     type TEXT DEFAULT 'text',
     metadata TEXT,
+    reply_count INTEGER DEFAULT 0,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
 );
@@ -69,6 +80,19 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages(channel_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
+
+-- Trigger to maintain reply_count on parent messages.
+CREATE TRIGGER IF NOT EXISTS trg_reply_count_insert AFTER INSERT ON messages
+WHEN NEW.thread_id IS NOT NULL
+BEGIN
+    UPDATE messages SET reply_count = reply_count + 1 WHERE id = NEW.thread_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_reply_count_delete AFTER DELETE ON messages
+WHEN OLD.thread_id IS NOT NULL
+BEGIN
+    UPDATE messages SET reply_count = reply_count - 1 WHERE id = OLD.thread_id;
+END;
 
 -- Full-text search (external content).
 -- NOTE: content_rowid=rowid is fragile with VACUUM (which can change implicit rowids).
@@ -175,6 +199,17 @@ CREATE TABLE IF NOT EXISTS approval_requests (
 );
 
 CREATE INDEX IF NOT EXISTS idx_approval_status ON approval_requests(workspace_id, status);
+
+-- Bookmarks (saved messages)
+CREATE TABLE IF NOT EXISTS bookmarks (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    note TEXT,
+    created_at INTEGER NOT NULL,
+    UNIQUE(user_id, message_id)
+);
 
 -- Webhooks
 CREATE TABLE IF NOT EXISTS webhooks (

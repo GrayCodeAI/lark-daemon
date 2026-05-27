@@ -6,6 +6,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // Store defines the file storage interface.
@@ -88,39 +93,73 @@ func (s *localStore) URL(ctx context.Context, path string) string {
 	return "" // local files served directly by the server
 }
 
-// --- S3 Store (stub for future implementation) ---
+// --- S3 Store ---
 
 type s3Store struct {
+	client   *s3.Client
 	bucket   string
 	region   string
 	endpoint string
-	key      string
-	secret   string
 }
 
 func newS3Store(cfg Config) (*s3Store, error) {
 	if cfg.S3Bucket == "" {
 		return nil, fmt.Errorf("S3_BUCKET is required for s3 storage")
 	}
+	var opts []func(*awsconfig.LoadOptions) error
+	if cfg.S3Region != "" {
+		opts = append(opts, awsconfig.WithRegion(cfg.S3Region))
+	}
+	if cfg.S3Key != "" && cfg.S3Secret != "" {
+		opts = append(opts, awsconfig.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(cfg.S3Key, cfg.S3Secret, ""),
+		))
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(), opts...)
+	if err != nil {
+		return nil, fmt.Errorf("load aws config: %w", err)
+	}
+	var s3Opts []func(*s3.Options)
+	if cfg.S3Endpoint != "" {
+		s3Opts = append(s3Opts, func(o *s3.Options) {
+			o.BaseEndpoint = aws.String(cfg.S3Endpoint)
+			o.UsePathStyle = true
+		})
+	}
 	return &s3Store{
+		client:   s3.NewFromConfig(awsCfg, s3Opts...),
 		bucket:   cfg.S3Bucket,
 		region:   cfg.S3Region,
 		endpoint: cfg.S3Endpoint,
-		key:      cfg.S3Key,
-		secret:   cfg.S3Secret,
 	}, nil
 }
 
 func (s *s3Store) Save(ctx context.Context, path string, r io.Reader) error {
-	return fmt.Errorf("S3 storage not yet implemented")
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(path),
+		Body:   r,
+	})
+	return err
 }
 
 func (s *s3Store) Open(ctx context.Context, path string) (io.ReadCloser, error) {
-	return nil, fmt.Errorf("S3 storage not yet implemented")
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(path),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out.Body, nil
 }
 
 func (s *s3Store) Delete(ctx context.Context, path string) error {
-	return fmt.Errorf("S3 storage not yet implemented")
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(path),
+	})
+	return err
 }
 
 func (s *s3Store) URL(ctx context.Context, path string) string {

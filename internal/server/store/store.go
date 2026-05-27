@@ -62,7 +62,7 @@ type Store interface {
 	ListReactions(ctx context.Context, messageID string) ([]*proto.Reaction, error)
 
 	// Search.
-	SearchMessages(ctx context.Context, query string, channelID string, limit int) ([]*proto.Message, error)
+	SearchMessages(ctx context.Context, query string, channelID string, workspaceID string, limit int) ([]*proto.Message, error)
 	SearchChannels(ctx context.Context, workspaceID, query string, limit int) ([]*proto.Channel, error)
 
 	// Task operations.
@@ -89,6 +89,7 @@ type Store interface {
 	CreatePin(ctx context.Context, p *proto.Pin) error
 	DeletePin(ctx context.Context, messageID string) error
 	ListPins(ctx context.Context, channelID string) ([]*proto.Pin, error)
+	ListPinsByMessage(ctx context.Context, messageID string) ([]*proto.Pin, error)
 
 	// DM operations.
 	GetDMChannel(ctx context.Context, workspaceID string, memberIDs []string) (*proto.Channel, error)
@@ -109,6 +110,87 @@ type Store interface {
 	GetWebhook(ctx context.Context, id string) (*proto.Webhook, error)
 	ListWebhooks(ctx context.Context, workspaceID string) ([]*proto.Webhook, error)
 	DeleteWebhook(ctx context.Context, id string) error
+
+	// Token blacklist operations (for JWT revocation).
+	BlacklistToken(ctx context.Context, jti string, expiresAt int64) error
+	IsTokenBlacklisted(ctx context.Context, jti string) (bool, error)
+
+	// Backup creates a consistent snapshot of the database at the given path.
+	Backup(ctx context.Context, destPath string) error
+
+	// Edit history.
+	CreateEditHistory(ctx context.Context, h *proto.EditHistory) error
+	ListEditHistory(ctx context.Context, messageID string) ([]*proto.EditHistory, error)
+
+	// Integrations.
+	CreateIntegration(ctx context.Context, i *proto.Integration) error
+	GetIntegration(ctx context.Context, id string) (*proto.Integration, error)
+	ListIntegrations(ctx context.Context) ([]*proto.Integration, error)
+	InstallIntegration(ctx context.Context, wi *proto.WorkspaceIntegration) error
+	UninstallIntegration(ctx context.Context, workspaceID, integrationID string) error
+	ListWorkspaceIntegrations(ctx context.Context, workspaceID string) ([]*proto.WorkspaceIntegration, error)
+	GetWorkspaceIntegration(ctx context.Context, workspaceID, integrationID string) (*proto.WorkspaceIntegration, error)
+
+	// SSO providers.
+	CreateSSOProvider(ctx context.Context, p *proto.SSOProvider) error
+	GetSSOProvider(ctx context.Context, id string) (*proto.SSOProvider, error)
+	ListSSOProviders(ctx context.Context, workspaceID string) ([]*proto.SSOProvider, error)
+	DeleteSSOProvider(ctx context.Context, id string) error
+	GetSSOProviderByDomain(ctx context.Context, domain string) (*proto.SSOProvider, error)
+
+	// Calls.
+	CreateCall(ctx context.Context, c *proto.Call) error
+	GetCall(ctx context.Context, id string) (*proto.Call, error)
+	UpdateCall(ctx context.Context, c *proto.Call) error
+	ListCalls(ctx context.Context, memberID string, limit int) ([]*proto.Call, error)
+
+	// Workflows.
+	CreateWorkflow(ctx context.Context, w *proto.Workflow) error
+	GetWorkflow(ctx context.Context, id string) (*proto.Workflow, error)
+	ListWorkflows(ctx context.Context, workspaceID string) ([]*proto.Workflow, error)
+	UpdateWorkflow(ctx context.Context, w *proto.Workflow) error
+	DeleteWorkflow(ctx context.Context, id string) error
+	CreateWorkflowRun(ctx context.Context, r *proto.WorkflowRun) error
+	GetWorkflowRun(ctx context.Context, id string) (*proto.WorkflowRun, error)
+	UpdateWorkflowRun(ctx context.Context, r *proto.WorkflowRun) error
+	ListWorkflowRuns(ctx context.Context, workflowID string, limit int) ([]*proto.WorkflowRun, error)
+
+	// E2EE key management.
+	RegisterUserKey(ctx context.Context, k *proto.UserKey) error
+	GetUserKeys(ctx context.Context, memberID string, keyType proto.UserKeyType) ([]*proto.UserKey, error)
+	GetUserKey(ctx context.Context, id string) (*proto.UserKey, error)
+	DeleteUserKey(ctx context.Context, id string) error
+	DeleteUserKeysByMember(ctx context.Context, memberID string) error
+
+	// E2EE encrypted messages.
+	CreateEncryptedMessage(ctx context.Context, m *proto.EncryptedMessage) error
+	GetEncryptedMessages(ctx context.Context, messageID string, recipientID string) ([]*proto.EncryptedMessage, error)
+	GetEncryptedMessageForRecipient(ctx context.Context, messageID, recipientID string) (*proto.EncryptedMessage, error)
+
+	// Billing.
+	CreateBillingCustomer(ctx context.Context, c *proto.BillingCustomer) error
+	GetBillingCustomer(ctx context.Context, workspaceID string) (*proto.BillingCustomer, error)
+	GetBillingCustomerByStripeID(ctx context.Context, stripeCustomerID string) (*proto.BillingCustomer, error)
+	UpdateBillingCustomer(ctx context.Context, c *proto.BillingCustomer) error
+	DeleteBillingCustomer(ctx context.Context, workspaceID string) error
+
+	// Usage tracking.
+	CreateUsageRecord(ctx context.Context, r *proto.UsageRecord) error
+	GetUsageRecord(ctx context.Context, workspaceID, metric string, periodStart int64) (*proto.UsageRecord, error)
+	IncrementUsage(ctx context.Context, workspaceID, metric string, periodStart, periodEnd int64, delta int) error
+	ListUsageRecords(ctx context.Context, workspaceID string) ([]*proto.UsageRecord, error)
+
+	// OAuth identities.
+	CreateOAuthIdentity(ctx context.Context, o *proto.OAuthIdentity) error
+	GetOAuthIdentity(ctx context.Context, provider, providerUserID string) (*proto.OAuthIdentity, error)
+	GetOAuthIdentityByMember(ctx context.Context, memberID, provider string) (*proto.OAuthIdentity, error)
+
+	// Notifications.
+	CreateNotification(ctx context.Context, n *proto.Notification) error
+	ListNotifications(ctx context.Context, memberID string, unreadOnly bool, limit int) ([]*proto.Notification, error)
+	MarkNotificationRead(ctx context.Context, id string) error
+	MarkAllNotificationsRead(ctx context.Context, memberID string) error
+	CountUnreadNotifications(ctx context.Context, memberID string) (int, error)
 
 	// Lifecycle.
 	Ping(ctx context.Context) error
