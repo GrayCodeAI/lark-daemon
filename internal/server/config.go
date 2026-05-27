@@ -19,6 +19,12 @@ type Config struct {
 	TLSCert    string
 	TLSKey     string
 	RateLimit  int
+	StorageType string
+	S3Bucket   string
+	S3Region   string
+	S3Endpoint string
+	S3Key      string
+	S3Secret   string
 }
 
 // LoadConfig loads configuration from environment variables.
@@ -34,7 +40,13 @@ func LoadConfig() *Config {
 		CORSOrigin: getEnv("LARK_CORS_ORIGIN", ""),
 		TLSCert:    getEnv("LARK_TLS_CERT", ""),
 		TLSKey:     getEnv("LARK_TLS_KEY", ""),
-		RateLimit:  getEnvInt("LARK_RATE_LIMIT", 100),
+		RateLimit:   getEnvInt("LARK_RATE_LIMIT", 100),
+		StorageType: getEnv("LARK_STORAGE_TYPE", "local"),
+		S3Bucket:    getEnv("LARK_S3_BUCKET", ""),
+		S3Region:    getEnv("LARK_S3_REGION", ""),
+		S3Endpoint:  getEnv("LARK_S3_ENDPOINT", ""),
+		S3Key:       getEnv("LARK_S3_KEY", ""),
+		S3Secret:    getEnv("LARK_S3_SECRET", ""),
 	}
 	return cfg
 }

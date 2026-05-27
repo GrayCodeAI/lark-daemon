@@ -14,6 +14,7 @@ import (
 	"lark-daemon/internal/proto"
 	"lark-daemon/internal/server/metrics"
 	"lark-daemon/internal/server/service"
+	"lark-daemon/internal/server/storage"
 	"lark-daemon/internal/server/store"
 	"lark-daemon/internal/server/websocket"
 )
@@ -42,8 +43,9 @@ func newTestEnv(t *testing.T) *testEnv {
 	ha := &hubAdapter{store: st}
 	collector := metrics.NewCollector(st)
 	rl := NewRateLimiter(1000) // high limit for tests
+	str, _ := storage.NewStore(storage.Config{Type: "local", LocalDir: "/tmp/lark-test"})
 
-	router := NewRouter(svc, st, hub, auth, logger, ha, "*", collector, rl)
+	router := NewRouter(svc, st, hub, auth, logger, ha, "*", collector, rl, str)
 	ts := httptest.NewServer(router)
 	t.Cleanup(ts.Close)
 

@@ -23,6 +23,7 @@ import (
 	"lark-daemon/internal/proto"
 	"lark-daemon/internal/server/metrics"
 	"lark-daemon/internal/server/service"
+	"lark-daemon/internal/server/storage"
 	"lark-daemon/internal/server/store"
 	"lark-daemon/internal/server/websocket"
 )
@@ -97,10 +98,11 @@ type Router struct {
 	agentManager *websocket.AgentManager
 	collector    *metrics.Collector
 	rateLimiter  *RateLimiter
+	storage      storage.Store
 }
 
 // NewRouter creates a new API router with all routes registered.
-func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore, corsOrigin string, collector *metrics.Collector, rl *RateLimiter) *Router {
+func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, auth *websocket.AuthService, logger *slog.Logger, agentStore websocket.AgentStore, corsOrigin string, collector *metrics.Collector, rl *RateLimiter, str storage.Store) *Router {
 	r := &Router{
 		Router:       chi.NewRouter(),
 		services:     services,
@@ -113,6 +115,7 @@ func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, a
 		agentManager: websocket.NewAgentManager(hub, agentStore, logger),
 		collector:    collector,
 		rateLimiter:  rl,
+		storage:      str,
 	}
 	// Forward the hub's wake callback to the agent manager so HandleAgentHello also records metrics
 	r.agentManager.SetWakeCallback(hub.WakeCallback())
@@ -2121,7 +2124,6 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid workspace id")
 		return
 	}
-	// Parse multipart form (max 32MB)
 	if err := req.ParseMultipartForm(32 << 20); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid multipart form")
 		return
@@ -2132,51 +2134,29 @@ func (r *Router) handleUploadFile(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	defer file.Close()
-	// Create upload directory
-	uploadDir := filepath.Join("data", "files", workspaceID)
-	if err := os.MkdirAll(uploadDir, 0o755); err != nil {
-		serverError(w, err, "failed to create upload directory")
-		return
-	}
-	// Write file
 	fID := proto.NewID()
 	ext := filepath.Ext(header.Filename)
-	savePath := filepath.Join(uploadDir, fID+ext)
-	dst, err := os.Create(savePath)
-	if err != nil {
-		serverError(w, err, "failed to create file on disk")
+	storagePath := filepath.Join(workspaceID, fID+ext)
+	if err := r.storage.Save(req.Context(), storagePath, file); err != nil {
+		serverError(w, err, "failed to save file")
 		return
 	}
-	defer dst.Close()
-	size, err := io.Copy(dst, file)
-	if err != nil {
-		dst.Close()
-		os.Remove(savePath) // clean up partial file on disk
-		serverError(w, err, "failed to write file")
-		return
-	}
-	// Detect MIME type: prefer Content-Type header, fallback to sniff
+	// Detect MIME type from header or content
 	mimeType := header.Header.Get("Content-Type")
-	if mimeType == "" || mimeType == "application/octet-stream" {
-		buf := make([]byte, 512)
-		dst.Seek(0, 0)
-		n, _ := dst.Read(buf)
-		if n > 0 {
-			mimeType = http.DetectContentType(buf[:n])
-		}
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
 	}
-	// Save to DB
 	f := &proto.File{
 		ID:          fID,
 		WorkspaceID: workspaceID,
 		UploaderID:  member.ID,
 		Filename:    sanitizeFilename(header.Filename),
 		MimeType:    mimeType,
-		Size:        size,
-		Path:        savePath,
+		Size:        header.Size,
+		Path:        storagePath,
 	}
 	if err := r.services.CreateFile(req.Context(), f); err != nil {
-		os.Remove(savePath) // clean up orphaned file on disk
+		r.storage.Delete(req.Context(), storagePath)
 		serverError(w, err, "internal error")
 		return
 	}
@@ -2231,8 +2211,8 @@ func (r *Router) handleDeleteFile(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}
-	if removeErr := os.Remove(f.Path); removeErr != nil && !os.IsNotExist(removeErr) {
-		serverError(w, removeErr, "failed to delete file from disk")
+	if err := r.storage.Delete(req.Context(), f.Path); err != nil && !os.IsNotExist(err) {
+		serverError(w, err, "failed to delete file from storage")
 		return
 	}
 	if err := r.services.DeleteFile(req.Context(), fileID); err != nil {
@@ -2257,9 +2237,15 @@ func (r *Router) handleDownloadFile(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusNotFound, "file not found")
 		return
 	}
+	reader, err := r.storage.Open(req.Context(), f.Path)
+	if err != nil {
+		serverError(w, err, "failed to open file")
+		return
+	}
+	defer reader.Close()
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+sanitizeFilename(f.Filename)+"\"")
 	w.Header().Set("Content-Type", f.MimeType)
-	http.ServeFile(w, req, f.Path)
+	io.Copy(w, reader)
 }
 
 // --- Pin handlers ---

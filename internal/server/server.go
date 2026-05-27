@@ -15,6 +15,7 @@ import (
 	"lark-daemon/internal/server/api"
 	"lark-daemon/internal/server/metrics"
 	"lark-daemon/internal/server/service"
+	"lark-daemon/internal/server/storage"
 	"lark-daemon/internal/server/store"
 	"lark-daemon/internal/server/websocket"
 )
@@ -70,7 +71,19 @@ func New(cfg Config) (*Server, error) {
 		defer cancel()
 		collector.RecordWake(ctx, agentID)
 	})
-	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin, collector, rl)
+	storeBackend, err := storage.NewStore(storage.Config{
+		Type:       cfg.StorageType,
+		LocalDir:   filepath.Join(cfg.DataDir, "files"),
+		S3Bucket:   cfg.S3Bucket,
+		S3Region:   cfg.S3Region,
+		S3Endpoint: cfg.S3Endpoint,
+		S3Key:      cfg.S3Key,
+		S3Secret:   cfg.S3Secret,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("storage init: %w", err)
+	}
+	router := api.NewRouter(services, db, hub, auth, logger, hubAdapter, cfg.CORSOrigin, collector, rl, storeBackend)
 
 	return &Server{
 		config:    &cfg,
