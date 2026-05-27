@@ -217,6 +217,11 @@ func TestHealthEndpoint(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+	var body map[string]string
+	readJSON(t, resp, &body)
+	if body["status"] != "ok" {
+		t.Fatalf("expected status=ok, got %v", body)
+	}
 }
 
 // --- Auth middleware ---

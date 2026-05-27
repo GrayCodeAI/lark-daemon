@@ -59,6 +59,7 @@ func New(cfg Config) (*Server, error) {
 
 	services := service.NewServices(db)
 	hub := websocket.NewHub()
+	hub.SetAllowedOrigin(cfg.CORSOrigin)
 	hubAdapter := NewHubStoreAdapter(db)
 	hub.SetStore(hubAdapter)
 	auth := websocket.NewAuthService(cfg.JWTSecret)

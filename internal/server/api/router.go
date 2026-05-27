@@ -247,6 +247,7 @@ func (r *Router) setupRoutes() {
 
 	r.Group(func(router chi.Router) {
 		router.Use(rateLimitMiddleware(r.rateLimiter))
+		router.Use(cacheControlMiddleware)
 
 		router.Route("/v1", func(v1 chi.Router) {
 		// Unauthenticated bootstrap routes
@@ -413,6 +414,16 @@ func sanitizeFilename(name string) string {
 		return "unnamed"
 	}
 	return name
+}
+
+// cacheControlMiddleware sets Cache-Control: no-cache on all API responses
+// to prevent stale data caching in real-time collaboration.
+func cacheControlMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		next.ServeHTTP(w, r)
+	})
 }
 
 
@@ -1349,7 +1360,7 @@ func (r *Router) handleDeleteMemory(w http.ResponseWriter, req *http.Request) {
 // --- WebSocket ---
 
 func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request) {
-	conn, err := websocket.UpgradeConn.Upgrade(w, req, nil)
+	conn, err := r.hub.Upgrade(w, req)
 	if err != nil {
 		r.logger.Error("websocket upgrade failed", "err", err)
 		return
@@ -1627,7 +1638,7 @@ func (r *Router) handleWSMessageEdit(c *websocket.Conn, env websocket.Envelope) 
 	}
 	msg, err := r.services.GetMessage(context.Background(), data.MessageID)
 	if err != nil {
-		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
+		wsError(c, err, "ws message edit: get message failed")
 		return
 	}
 	if msg == nil {
@@ -1661,7 +1672,7 @@ func (r *Router) handleWSMessageDelete(c *websocket.Conn, env websocket.Envelope
 	}
 	msg, err := r.services.GetMessage(context.Background(), data.MessageID)
 	if err != nil {
-		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
+		wsError(c, err, "ws message delete: get message failed")
 		return
 	}
 	if msg == nil {
@@ -1816,7 +1827,7 @@ func (r *Router) handleWSApprovalRequest(c *websocket.Conn, env websocket.Envelo
 	// We need workspace_id — get from agent's member record
 	member, err := r.services.GetMember(context.Background(), c.ID())
 	if err != nil {
-		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "internal error"}))
+		wsError(c, err, "ws approval: get member failed")
 		return
 	}
 	if member == nil {

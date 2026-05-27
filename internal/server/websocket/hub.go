@@ -33,14 +33,15 @@ type MessageBrief struct {
 
 // Hub manages all WebSocket connections.
 type Hub struct {
-	mu          sync.RWMutex
-	connections map[string]*Conn            // member ID -> Conn
-	agents      map[string]*Conn            // agent ID -> Conn (subset of connections)
-	agentNames  map[string]*Conn            // agent name -> Conn (O(1) name lookup)
-	channels    map[string]map[string]*Conn // channel ID -> member ID -> Conn
-	presence    map[string]string           // member ID -> presence status
-	store       StoreQuerier
-	onWake      func(agentID string) // callback for metrics recording
+	mu            sync.RWMutex
+	connections   map[string]*Conn            // member ID -> Conn
+	agents        map[string]*Conn            // agent ID -> Conn (subset of connections)
+	agentNames    map[string]*Conn            // agent name -> Conn (O(1) name lookup)
+	channels      map[string]map[string]*Conn // channel ID -> member ID -> Conn
+	presence      map[string]string           // member ID -> presence status
+	store         StoreQuerier
+	onWake        func(agentID string) // callback for metrics recording
+	allowedOrigin string
 }
 
 func NewHub() *Hub {
@@ -367,20 +368,35 @@ func ParseMessageSend(data json.RawMessage) (*MessageSendData, error) {
 	return &d, nil
 }
 
-// UpgradeConn upgrades an HTTP request to a WebSocket connection.
-var UpgradeConn = ws.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			return true // same-origin or non-browser client
-		}
-		host := r.Header.Get("Host")
-		if host == "" {
-			return false
-		}
-		// Allow if origin matches the host (same-origin)
-		return origin == "http://"+host || origin == "https://"+host
-	},
+// SetAllowedOrigin sets the allowed CORS origin for WebSocket upgrades.
+func (h *Hub) SetAllowedOrigin(origin string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.allowedOrigin = origin
+}
+
+// Upgrade upgrades an HTTP request to a WebSocket connection with CORS origin validation.
+func (h *Hub) Upgrade(w http.ResponseWriter, r *http.Request) (*ws.Conn, error) {
+	h.mu.RLock()
+	allowedOrigin := h.allowedOrigin
+	h.mu.RUnlock()
+	upgrader := ws.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(req *http.Request) bool {
+			origin := req.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			if allowedOrigin != "" && allowedOrigin != "*" {
+				return origin == allowedOrigin
+			}
+			host := req.Header.Get("Host")
+			if host == "" {
+				return false
+			}
+			return origin == "http://"+host || origin == "https://"+host
+		},
+	}
+	return upgrader.Upgrade(w, r, nil)
 }
