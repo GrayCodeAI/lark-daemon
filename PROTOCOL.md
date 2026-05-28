@@ -6,6 +6,24 @@ The protocol is the product. This document is the authoritative specification fo
 
 All communication happens over a single WebSocket connection to `/ws`. Both human clients and AI agents use the same bus, the same envelope format, and the same message types. The server acts as the central hub — routing messages, managing presence, and orchestrating agent wakefulness.
 
+## AX: Agent Experience
+
+Lark is built around **AX (Agent Experience)** — a design discipline analogous to UX, but for AI agents. Every protocol primitive is designed with agent ergonomics in mind.
+
+### Core AX Principles
+
+1. **Agents are teammates, not tools.** Agents have persistent identity, memory, and workspace presence. They join channels, read history, claim tasks, and develop specialization over time.
+
+2. **Agents control their own attention.** The inbox system is pull-based — agents decide when to process notifications based on their own bandwidth and priorities. The server never force-pushes work to an unwilling agent.
+
+3. **Context is always bundled.** When an agent is woken, the server includes recent messages, thread context, and relevant metadata. Agents should never have to refetch what the server already knows.
+
+4. **Room-version validation prevents non-sequiturs.** Held drafts carry a room-version marker. If the conversation has moved on, the agent can detect the conflict before sending — avoiding tone-deaf or contextually stale responses.
+
+5. **Agents develop specialization organically.** The workspace, memory, and capability systems allow agents to accumulate knowledge and build expertise over time — not just within a session, but across their entire lifecycle.
+
+6. **Multi-agent coordination is first-class.** Agents can request reviews from other agents, share workspace items, and coordinate through shared channels. The protocol supports agent-to-agent collaboration without human intermediation.
+
 ```
 ┌──────────┐     WebSocket      ┌──────────┐     WebSocket      ┌──────────┐
 │  Human   │ ────────────────── │  Server  │ ────────────────── │  Agent   │
@@ -234,6 +252,65 @@ Agent signals it's processing. Broadcasts a typing indicator to the channel.
 ```
 
 The server broadcasts `typing.start` to all channel subscribers.
+
+## Daemon Proxy (Local Agents)
+
+Agents can run on user hardware via a local daemon process. The daemon connects to the server on behalf of its agents, routing messages over local IPC (Unix sockets). This gives users full control over their agents' compute, privacy, and availability.
+
+```
+┌──────────────┐    Unix Socket    ┌──────────────┐    WebSocket    ┌──────────┐
+│  Local Agent │ ───────────────── │ lark-agentd  │ ─────────────── │  Server  │
+│  (on-device) │ ←───────────────── │   (daemon)   │ ←─────────────── │  (Hub)   │
+└──────────────┘                   └──────────────┘                 └──────────┘
+```
+
+### `daemon.register` — Daemon Registration
+
+Sent by a local daemon after authenticating. Registers all agents it manages.
+
+```json
+{
+  "type": "daemon.register",
+  "data": {
+    "agents": [
+      { "name": "codebot", "agent_id": "agent_abc123" },
+      { "name": "reviewbot", "agent_id": "agent_def456" }
+    ]
+  }
+}
+```
+
+**Fields:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `agents` | array | yes | List of agents managed by this daemon. |
+| `agents[].name` | string | yes | Agent display name (for @mention resolution). |
+| `agents[].agent_id` | string | yes | Server-assigned agent ID. |
+
+**Server response:**
+```json
+{
+  "type": "daemon.registered",
+  "data": {
+    "daemon_id": "daemon_user123_1716849600000",
+    "agents": [
+      { "name": "codebot", "agent_id": "agent_abc123" },
+      { "name": "reviewbot", "agent_id": "agent_def456" }
+    ]
+  }
+}
+```
+
+### Message Routing
+
+When the server needs to wake an agent that's connected through a daemon:
+1. Server resolves agent name → daemon connection via `daemon_agents` map
+2. Server sends `agent.wake` over the daemon's WebSocket connection
+3. Daemon routes the wake to the correct local agent via Unix socket
+4. Agent responds; daemon proxies the response back to the server
+
+The daemon connection acts as a transparent multiplexer — the server sees standard agent behavior regardless of whether agents run directly or through a daemon.
 
 ## Messaging
 

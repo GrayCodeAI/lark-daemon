@@ -42,15 +42,28 @@ type Hub struct {
 	store         StoreQuerier
 	onWake        func(agentID string) // callback for metrics recording
 	allowedOrigin string
+
+	// Daemon proxy support
+	daemons       map[string]*DaemonProxy // daemon ID -> proxy
+	daemonAgents  map[string]*Conn        // agent name -> daemon Conn (for daemon-hosted agents)
+}
+
+// DaemonProxy represents a connected daemon that proxies for multiple agents.
+type DaemonProxy struct {
+	ID      string            `json:"id"`
+	Conn    *Conn             `json:"-"`
+	Agents  map[string]string `json:"agents"` // agent_name -> agent_id
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		connections: make(map[string]*Conn),
-		agents:      make(map[string]*Conn),
-		agentNames:  make(map[string]*Conn),
-		channels:    make(map[string]map[string]*Conn),
-		presence:    make(map[string]string),
+		connections:  make(map[string]*Conn),
+		agents:       make(map[string]*Conn),
+		agentNames:   make(map[string]*Conn),
+		channels:     make(map[string]map[string]*Conn),
+		presence:     make(map[string]string),
+		daemons:      make(map[string]*DaemonProxy),
+		daemonAgents: make(map[string]*Conn),
 	}
 }
 
@@ -233,15 +246,69 @@ func (h *Hub) WakeAgent(agentID string, data AgentWakeData) {
 		slog.Warn("agent not connected, cannot wake", "agent_id", agentID)
 		return
 	}
-	env := NewEnvelope(EventAgentWake, data)
-	c.Send(env)
-	slog.Info("agent woken", "agent_id", agentID, "reason", data.Reason)
+	c.Send(NewEnvelope(EventAgentWake, data))
+}
+
+// AgentCount returns the number of agent connections.
+func (h *Hub) AgentCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.agents)
+}
+
+// RegisterDaemon registers a daemon proxy connection.
+func (h *Hub) RegisterDaemon(daemonID string, c *Conn, agents map[string]string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	proxy := &DaemonProxy{
+		ID:     daemonID,
+		Conn:   c,
+		Agents: agents,
+	}
+	h.daemons[daemonID] = proxy
+
+	// Register each agent as routed through this daemon
+	for agentName := range agents {
+		h.daemonAgents[agentName] = c
+		h.agentNames[agentName] = c
+	}
+
+	slog.Info("daemon registered", "daemon_id", daemonID, "agents", len(agents))
+}
+
+// UnregisterDaemon unregisters a daemon proxy connection.
+func (h *Hub) UnregisterDaemon(daemonID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	proxy, exists := h.daemons[daemonID]
+	if !exists {
+		return
+	}
+
+	// Remove all agent registrations
+	for agentName := range proxy.Agents {
+		delete(h.daemonAgents, agentName)
+		delete(h.agentNames, agentName)
+	}
+
+	delete(h.daemons, daemonID)
+	slog.Info("daemon unregistered", "daemon_id", daemonID)
 }
 
 // WakeAgentByName resolves an agent name to a connection and sends a wake signal
 // with bundled context (recent messages from the channel).
 func (h *Hub) WakeAgentByName(name, channelID, reason string) {
-	c := h.GetAgentByName(name)
+	// Check daemon agents first, then direct agents
+	h.mu.RLock()
+	c := h.daemonAgents[name]
+	if c == nil {
+		c = h.agentNames[name]
+	}
+	store := h.store
+	h.mu.RUnlock()
+
 	if c == nil {
 		slog.Warn("agent not connected by name", "name", name)
 		return
@@ -251,9 +318,6 @@ func (h *Hub) WakeAgentByName(name, channelID, reason string) {
 	ctx := WakeContext{
 		Channel: map[string]string{"id": channelID},
 	}
-	h.mu.RLock()
-	store := h.store
-	h.mu.RUnlock()
 	if store != nil {
 		msgs, err := store.GetRecentMessages(channelID, 20)
 		if err == nil {
@@ -271,8 +335,9 @@ func (h *Hub) WakeAgentByName(name, channelID, reason string) {
 	}
 
 	data := AgentWakeData{
-		Reason:  reason,
-		Context: ctx,
+		Reason:     reason,
+		Context:    ctx,
+		AgentName:  name, // Include agent name for daemon routing
 	}
 	env := NewEnvelope(EventAgentWake, data)
 	c.Send(env)
@@ -280,6 +345,13 @@ func (h *Hub) WakeAgentByName(name, channelID, reason string) {
 		h.onWake(c.ID())
 	}
 	slog.Info("agent woken by name", "name", name, "agent_id", c.ID(), "reason", reason)
+}
+
+// DaemonCount returns the number of connected daemons.
+func (h *Hub) DaemonCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.daemons)
 }
 
 // SendTypingIndicator broadcasts a typing indicator to a channel.
@@ -313,13 +385,6 @@ func (h *Hub) Total() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.connections)
-}
-
-// AgentCount returns the number of agent connections.
-func (h *Hub) AgentCount() int {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return len(h.agents)
 }
 
 // Close gracefully closes all WebSocket connections.

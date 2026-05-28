@@ -47,6 +47,9 @@ func (r *Router) handleWSEvent(c *websocket.Conn, env websocket.Envelope) {
 		}
 		r.agentManager.HandleAgentHello(c, data)
 
+	case websocket.EventDaemonRegister:
+		r.handleWSDaemonRegister(c, env)
+
 	case websocket.EventAgentSleep:
 		r.agentManager.HandleAgentSleep(c)
 
@@ -1121,4 +1124,47 @@ func (r *Router) handleWSWorkspaceUpdate(c *websocket.Conn, env websocket.Envelo
 		}
 		c.Send(websocket.NewEnvelope(websocket.EventWorkspaceUpdate, item))
 	}
+}
+
+// handleWSDaemonRegister handles daemon.register events from local daemons.
+func (r *Router) handleWSDaemonRegister(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authenticated"}))
+		return
+	}
+
+	var data websocket.DaemonRegisterData
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid daemon register data"}))
+		return
+	}
+
+	if len(data.Agents) == 0 {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "no agents provided"}))
+		return
+	}
+
+	// Generate daemon ID
+	daemonID := fmt.Sprintf("daemon_%s_%d", c.ID(), time.Now().UnixMilli())
+
+	// Build agents map
+	agents := make(map[string]string)
+	for _, a := range data.Agents {
+		agents[a.Name] = a.AgentID
+	}
+
+	// Register with hub
+	r.hub.RegisterDaemon(daemonID, c, agents)
+
+	// Send confirmation
+	c.Send(websocket.NewEnvelope(websocket.EventDaemonRegistered, websocket.DaemonRegisteredData{
+		DaemonID: daemonID,
+		Agents:   data.Agents,
+	}))
+
+	r.logger.Info("daemon registered",
+		"daemon_id", daemonID,
+		"agents", len(data.Agents),
+		"member_id", c.ID(),
+	)
 }

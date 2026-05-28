@@ -45,6 +45,10 @@ const (
 	EventAgentWake     = "agent.wake"
 	EventAgentThinking = "agent.thinking"
 
+	// Daemon proxy
+	EventDaemonRegister   = "daemon.register"
+	EventDaemonRegistered = "daemon.registered"
+
 	EventMessageSend = "message.send"
 	EventMessageNew  = "message.new"
 	EventMessageAck  = "message.ack"
@@ -128,8 +132,9 @@ type AgentWelcomeData struct {
 }
 
 type AgentWakeData struct {
-	Reason  string      `json:"reason"`
-	Context WakeContext `json:"context"`
+	Reason    string      `json:"reason"`
+	Context   WakeContext `json:"context"`
+	AgentName string      `json:"agent_name,omitempty"` // For daemon routing
 }
 
 type WakeContext struct {
@@ -228,4 +233,20 @@ type WorkspaceUpdateData struct {
 	Namespace   string   `json:"namespace,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
+}
+
+// Daemon event data types.
+
+type DaemonRegisterData struct {
+	Agents []DaemonAgent `json:"agents"`
+}
+
+type DaemonAgent struct {
+	Name    string `json:"name"`
+	AgentID string `json:"agent_id"`
+}
+
+type DaemonRegisteredData struct {
+	DaemonID string `json:"daemon_id"`
+	Agents   []DaemonAgent `json:"agents"`
 }
