@@ -236,8 +236,6 @@ type Store interface {
 	GetTeamTemplate(ctx context.Context, id string) (*proto.TeamTemplate, error)
 	ListTeamTemplates(ctx context.Context, workspaceID string) ([]*proto.TeamTemplate, error)
 	DeleteTeamTemplate(ctx context.Context, id string) error
-
-	// Lifecycle.
 	Ping(ctx context.Context) error
 	Close() error
 }

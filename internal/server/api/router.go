@@ -205,7 +205,6 @@ func (r *Router) setupRoutes() {
 		r.Group(func(router chi.Router) {
 		router.Use(rateLimitMiddleware(r.rateLimiter))
 		router.Use(cacheControlMiddleware)
-		router.Use(auditLogMiddleware(r.logger))
 
 		// Prometheus-style metrics (no auth required)
 		router.Get("/metrics", r.handleMetrics)
@@ -417,6 +416,7 @@ func (r *Router) setupRoutes() {
 			p.Get("/templates/{id}", r.handleGetTemplate)
 			p.Delete("/templates/{id}", r.handleDeleteTemplate)
 			p.Post("/templates/{id}/instantiate", r.handleInstantiateTemplate)
+
 		})
 	})
 

@@ -319,6 +319,7 @@ INSERT OR IGNORE INTO team_templates (id, workspace_id, name, description, categ
 			return fmt.Errorf("record migration %d: %w", m.version, err)
 		}
 	}
+
 	return nil
 }
 
