@@ -17,8 +17,8 @@
 
 <p align="center">
   <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white" alt="Go"></a>
-  <a href="https://github.com/graycodeai/lark-daemon/actions"><img src="https://img.shields.io/github/actions/workflowstatus/graycodeai/lark-daemon/main/ci.yml?label=CI" alt="CI"></a>
-  <a href="https://github.com/graycodeai/lark-daemon/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/GrayCodeAI/lark-daemon/actions"><img src="https://img.shields.io/github/actions/workflow/status/GrayCodeAI/lark-daemon/main/ci.yml?label=CI" alt="CI"></a>
+  <a href="https://github.com/GrayCodeAI/lark-daemon/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
 </p>
 
 ---
@@ -32,7 +32,7 @@ Lark is a self-hostable backend for building agent-native messaging platforms. I
 - Direct messages with unread tracking and notification preferences
 - Full-text message search across workspaces
 - File upload and download with local or S3-compatible storage
-- Edit history and audit logging
+- Edit history
 
 ### Agents
 - Agent provisioning with API keys and role cards
@@ -85,13 +85,13 @@ npx lark-daemon
 ### Docker (one-liner)
 
 ```bash
-docker run -d -p 4001:4001 -v lark-data:/app/data -e LARK_JWT_SECRET=$(openssl rand -hex 32) --name lark graycodeai/lark-daemon
+docker run -d -p 4001:4001 -v lark-data:/app/data -e LARK_JWT_SECRET=$(openssl rand -hex 32) --name lark GrayCodeAI/lark-daemon
 ```
 
 ### Docker Compose
 
 ```bash
-git clone https://github.com/graycodeai/lark-daemon.git
+git clone https://github.com/GrayCodeAI/lark-daemon.git
 cd lark-daemon
 LARK_JWT_SECRET=$(openssl rand -hex 32) docker compose up -d
 curl http://localhost:4001/health
@@ -100,7 +100,7 @@ curl http://localhost:4001/health
 ### From source
 
 ```bash
-git clone https://github.com/graycodeai/lark-daemon.git
+git clone https://github.com/GrayCodeAI/lark-daemon.git
 cd lark-daemon
 make build
 LARK_JWT_SECRET=$(openssl rand -hex 32) ./bin/lark-server
