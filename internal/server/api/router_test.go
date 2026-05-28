@@ -892,28 +892,6 @@ func TestApprovalAgentFromAuth(t *testing.T) {
 	}
 }
 
-func TestReviewApprovalReviewerFromAuth(t *testing.T) {
-	env := newTestEnv(t)
-	agentID, apiKey, wsID := env.createAgent(t)
-
-	// Create approval
-	approval := map[string]string{"action": "deploy", "payload": `{"env":"prod"}`}
-	resp := env.doReq(t, "POST", "/v1/workspaces/"+wsID+"/approvals", approval, apiKey)
-	checkOK(t, resp)
-	var aResp map[string]any
-	readJSON(t, resp, &aResp)
-	approvalID := aResp["id"].(string)
-
-	// Review with spoofed reviewer_id
-	review := map[string]any{"approved": true, "reviewer_id": "spoofed-id", "note": "looks good"}
-	resp = env.doReq(t, "PATCH", "/v1/approvals/"+approvalID, review, apiKey)
-	checkOK(t, resp)
-	var rResp map[string]any
-	readJSON(t, resp, &rResp)
-	if rResp["reviewer_id"] != agentID {
-		t.Fatalf("expected reviewer_id=%s from auth, got %v", agentID, rResp["reviewer_id"])
-	}
-}
 
 func TestCreateDMMustIncludeAuthMember(t *testing.T) {
 	env := newTestEnv(t)

@@ -317,7 +317,6 @@ func (r *Router) setupRoutes() {
 			p.Post("/workspaces/{id}/approvals", r.handleCreateApproval)
 			p.Get("/workspaces/{id}/approvals", r.handleListApprovals)
 			p.Get("/approvals/{id}", r.handleGetApproval)
-			p.Patch("/approvals/{id}", r.handleReviewApproval)
 
 			// Agent metrics
 			p.Get("/agents/{id}/metrics", r.handleGetAgentMetrics)
@@ -345,25 +344,8 @@ func (r *Router) setupRoutes() {
 			p.Get("/workspaces/{id}/integrations", r.handleListWorkspaceIntegrations)
 			p.Delete("/workspaces/{id}/integrations/{integrationId}", r.handleUninstallIntegration)
 
-			// SSO Providers
-			p.Get("/workspaces/{id}/sso", r.handleListSSOProviders)
-			p.Post("/workspaces/{id}/sso", r.handleCreateSSOProvider)
-			p.Delete("/sso/{id}", r.handleDeleteSSOProvider)
-			p.Get("/sso/discover", r.handleSSODiscover)
 
-			// Calls
-			p.Get("/calls", r.handleListCalls)
-			p.Get("/calls/{id}", r.handleGetCall)
 
-			// Workflows
-			p.Post("/workspaces/{id}/workflows", r.handleCreateWorkflow)
-			p.Get("/workspaces/{id}/workflows", r.handleListWorkflows)
-			p.Get("/workflows/{id}", r.handleGetWorkflow)
-			p.Patch("/workflows/{id}", r.handleUpdateWorkflow)
-			p.Delete("/workflows/{id}", r.handleDeleteWorkflow)
-			p.Post("/workflows/{id}/trigger", r.handleTriggerWorkflow)
-			p.Get("/workflows/{id}/runs", r.handleListWorkflowRuns)
-			p.Get("/workflow-runs/{id}", r.handleGetWorkflowRun)
 
 			// E2EE
 			p.Post("/keys", r.handleRegisterKey)
@@ -404,18 +386,7 @@ func (r *Router) setupRoutes() {
 			p.Put("/agents/{id}/workspace/{itemID}", r.handleUpdateWorkspaceItem)
 			p.Delete("/agents/{id}/workspace/{itemID}", r.handleDeleteWorkspaceItem)
 
-			// Reviews
-			p.Post("/workspaces/{id}/reviews", r.handleCreateReview)
-			p.Get("/workspaces/{id}/reviews", r.handleListReviews)
-			p.Get("/reviews/{id}", r.handleGetReview)
-			p.Patch("/reviews/{id}", r.handleUpdateReview)
 
-			// Team templates
-			p.Get("/workspaces/{id}/templates", r.handleListTemplates)
-			p.Post("/workspaces/{id}/templates", r.handleCreateTemplate)
-			p.Get("/templates/{id}", r.handleGetTemplate)
-			p.Delete("/templates/{id}", r.handleDeleteTemplate)
-			p.Post("/templates/{id}/instantiate", r.handleInstantiateTemplate)
 
 		})
 	})
