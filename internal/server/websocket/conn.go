@@ -164,7 +164,7 @@ func (c *Conn) CloseWithMessage(messageType int, data []byte) {
 	if c.conn != nil {
 		c.writeMu.Lock()
 		if messageType > 0 {
-			c.conn.WriteMessage(messageType, data)
+			_ = c.conn.WriteMessage(messageType, data)
 		}
 		c.conn.Close()
 		c.writeMu.Unlock()
@@ -182,9 +182,9 @@ func (c *Conn) ReadPump(handler func(env Envelope)) {
 	}()
 
 	c.conn.SetReadLimit(65536)
-	c.conn.SetReadDeadline(time.Now().Add(pongWait))
+	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(pongWait))
+		_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
 		return nil
 	})
 	for {
@@ -223,7 +223,7 @@ func (c *Conn) WritePump() {
 				return
 			}
 			c.writeMu.Lock()
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			err := c.conn.WriteMessage(ws.TextMessage, msg)
 			c.writeMu.Unlock()
 			if err != nil {
@@ -232,7 +232,7 @@ func (c *Conn) WritePump() {
 			}
 		case <-ticker.C:
 			c.writeMu.Lock()
-			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			_ = c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.conn.WriteMessage(ws.PingMessage, nil); err != nil {
 				c.writeMu.Unlock()
 				slog.Error("ws ping error", "err", err, "conn_id", c.ID())

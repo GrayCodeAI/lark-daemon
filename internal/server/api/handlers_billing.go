@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -233,46 +232,6 @@ func (r *Router) handleStripeWebhook(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusOK)
-}
-
-// --- Plan limits middleware ---
-
-// checkPlanLimits returns an error if the workspace has exceeded its plan limits.
-func (r *Router) checkPlanLimit(workspaceID, metric string) error {
-	customer, _ := r.services.GetBillingCustomer(context.Background(), workspaceID)
-	plan := proto.PlanFree
-	if customer != nil && customer.Status == proto.BillingActive {
-		plan = customer.Plan
-	}
-	limits := proto.GetPlanLimits(plan)
-	var current int
-	switch metric {
-	case "members":
-		members, _ := r.services.ListMembers(context.Background(), workspaceID)
-		current = len(members)
-		if current >= limits.MaxMembers {
-			return fmt.Errorf("plan limit exceeded: members (limit: %d, plan: %s)", limits.MaxMembers, plan)
-		}
-	case "channels":
-		channels, _ := r.services.ListChannels(context.Background(), workspaceID)
-		current = len(channels)
-		if current >= limits.MaxChannels {
-			return fmt.Errorf("plan limit exceeded: channels (limit: %d, plan: %s)", limits.MaxChannels, plan)
-		}
-	case "messages":
-		periodStart := time.Now().AddDate(0, 0, -time.Now().Day()+1).Truncate(24 * time.Hour).UnixMilli()
-		usage, _ := r.services.GetUsageRecord(context.Background(), workspaceID, "messages", periodStart)
-		if usage != nil && usage.Quantity >= limits.MaxMessages {
-			return fmt.Errorf("plan limit exceeded: messages per month (limit: %d, plan: %s)", limits.MaxMessages, plan)
-		}
-	case "workflows":
-		workflows, _ := r.services.ListWorkflows(context.Background(), workspaceID)
-		current = len(workflows)
-		if current >= limits.MaxWorkflows {
-			return fmt.Errorf("plan limit exceeded: workflows (limit: %d, plan: %s)", limits.MaxWorkflows, plan)
-		}
-	}
-	return nil
 }
 
 // recordUsage increments usage for a workspace metric. Runs in background, errors are logged but not returned.

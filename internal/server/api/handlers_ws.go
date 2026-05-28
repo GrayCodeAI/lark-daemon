@@ -3,11 +3,13 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"lark-daemon/internal/proto"
+	"lark-daemon/internal/server/store"
 	"lark-daemon/internal/server/websocket"
 )
 
@@ -100,6 +102,30 @@ func (r *Router) handleWSEvent(c *websocket.Conn, env websocket.Envelope) {
 
 	case websocket.EventCallEnd:
 		r.handleWSCallEnd(c, env)
+
+	// Agent inbox
+	case websocket.EventInboxPoll:
+		r.handleWSInboxPoll(c, env)
+	case websocket.EventInboxAck:
+		r.handleWSInboxAck(c, env)
+
+	// Held drafts
+	case websocket.EventDraftCreate:
+		r.handleWSDraftCreate(c, env)
+	case websocket.EventDraftValidate:
+		r.handleWSDraftValidate(c, env)
+	case websocket.EventDraftSend:
+		r.handleWSDraftSend(c, env)
+
+	// Reviews
+	case websocket.EventReviewRequest:
+		r.handleWSReviewRequest(c, env)
+	case websocket.EventReviewResult:
+		r.handleWSReviewResult(c, env)
+
+	// Agent workspace
+	case websocket.EventWorkspaceUpdate:
+		r.handleWSWorkspaceUpdate(c, env)
 
 	default:
 		r.logger.Warn("unknown ws event", "type", env.Type)
@@ -293,12 +319,15 @@ func (r *Router) handleMentions(msg *proto.Message) {
 			continue
 		}
 		n := &proto.Notification{
-			MemberID:  member.ID,
-			Type:      "mention",
-			Title:     "You were mentioned",
-			Body:      msg.Content,
-			ChannelID: msg.ChannelID,
-			MessageID: msg.ID,
+			MemberID:    member.ID,
+			Type:        "mention",
+			Title:       "You were mentioned",
+			Body:        msg.Content,
+			ChannelID:   msg.ChannelID,
+			MessageID:   msg.ID,
+			SourceType:  "mention",
+			Priority:    "normal",
+			AckRequired: false,
 		}
 		_ = r.services.CreateNotification(context.Background(), n)
 		if c := r.hub.GetConn(member.ID); c != nil {
@@ -726,5 +755,370 @@ func (r *Router) handleWSCallEnd(c *websocket.Conn, env websocket.Envelope) {
 			"call_id": call.ID,
 			"reason":  "ended",
 		}))
+	}
+}
+
+// --- Agent Inbox WebSocket Handlers ---
+
+func (r *Router) handleWSInboxPoll(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() || !c.IsAgent() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+		return
+	}
+	var data websocket.InboxPollData
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid inbox poll data"}))
+		return
+	}
+	opts := store.InboxOptions{
+		SourceType: data.SourceType,
+		UnreadOnly: data.UnreadOnly,
+		Since:      data.Since,
+		Limit:      data.Limit,
+	}
+	if opts.Limit == 0 {
+		opts.Limit = 50
+	}
+	items, err := r.store.ListAgentInbox(c.Context(), c.ID(), opts)
+	if err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to list inbox"}))
+		return
+	}
+	c.Send(websocket.NewEnvelope(websocket.EventInboxItems, items))
+}
+
+func (r *Router) handleWSInboxAck(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() || !c.IsAgent() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+		return
+	}
+	var data websocket.InboxAckData
+	if err := json.Unmarshal(env.Data, &data); err != nil || data.ItemID == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid inbox ack data"}))
+		return
+	}
+	if err := r.store.AckInboxItem(c.Context(), data.ItemID); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to ack inbox item"}))
+		return
+	}
+	c.Send(websocket.NewEnvelope(websocket.EventInboxAck, map[string]string{"item_id": data.ItemID, "status": "acked"}))
+}
+
+// --- Held Draft WebSocket Handlers ---
+
+func (r *Router) handleWSDraftCreate(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() || !c.IsAgent() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+		return
+	}
+	var data websocket.DraftCreateData
+	if err := json.Unmarshal(env.Data, &data); err != nil || data.ChannelID == "" || data.Content == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "channel_id and content required"}))
+		return
+	}
+	roomVersion, err := r.store.GetChannelRoomVersion(c.Context(), data.ChannelID)
+	if err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to get room version"}))
+		return
+	}
+	d := &proto.HeldDraft{
+		AgentID:     c.ID(),
+		ChannelID:   data.ChannelID,
+		Content:     data.Content,
+		ThreadID:    data.ThreadID,
+		RoomVersion: roomVersion,
+		Status:      proto.DraftHeld,
+		ExpiresAt:   time.Now().Add(10 * time.Minute).UnixMilli(),
+	}
+	if err := r.store.CreateDraft(c.Context(), d); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to create draft"}))
+		return
+	}
+	c.Send(websocket.NewEnvelope(websocket.EventDraftAck, websocket.DraftAckData{
+		DraftID:     d.ID,
+		RoomVersion: d.RoomVersion,
+	}))
+}
+
+func (r *Router) handleWSDraftValidate(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() || !c.IsAgent() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+		return
+	}
+	var data websocket.DraftValidateData
+	if err := json.Unmarshal(env.Data, &data); err != nil || data.DraftID == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid draft validate data"}))
+		return
+	}
+	d, err := r.store.GetDraft(c.Context(), data.DraftID)
+	if err != nil || d == nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "draft not found"}))
+		return
+	}
+	if d.AgentID != c.ID() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not your draft"}))
+		return
+	}
+	currentVersion, err := r.store.GetChannelRoomVersion(c.Context(), d.ChannelID)
+	if err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to get room version"}))
+		return
+	}
+	delta := currentVersion - d.RoomVersion
+	result := websocket.DraftResultData{
+		DraftID:        d.ID,
+		Valid:          delta <= 5,
+		CurrentVersion: currentVersion,
+		DraftVersion:   d.RoomVersion,
+		VersionDelta:   delta,
+	}
+	if delta > 5 {
+		msgs, _ := r.store.GetRecentMessages(c.Context(), d.ChannelID, 5)
+		for _, m := range msgs {
+			result.RecentMessages = append(result.RecentMessages, m)
+		}
+	}
+	c.Send(websocket.NewEnvelope(websocket.EventDraftResult, result))
+}
+
+func (r *Router) handleWSDraftSend(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() || !c.IsAgent() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+		return
+	}
+	var data websocket.DraftSendData
+	if err := json.Unmarshal(env.Data, &data); err != nil || data.DraftID == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid draft send data"}))
+		return
+	}
+	d, err := r.store.GetDraft(c.Context(), data.DraftID)
+	if err != nil || d == nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "draft not found"}))
+		return
+	}
+	if d.AgentID != c.ID() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not your draft"}))
+		return
+	}
+	if d.Status != proto.DraftHeld {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "draft is not in held status"}))
+		return
+	}
+	currentVersion, _ := r.store.GetChannelRoomVersion(c.Context(), d.ChannelID)
+	delta := currentVersion - d.RoomVersion
+	if delta > 5 && !data.ForceVersion {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "draft is stale, use force_version to override"}))
+		return
+	}
+	msg := &proto.Message{
+		ChannelID:   d.ChannelID,
+		SenderID:    d.AgentID,
+		ThreadID:    d.ThreadID,
+		Content:     d.Content,
+		ContentType: "text",
+		Type:        "text",
+	}
+	if err := r.store.CreateMessage(c.Context(), msg); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to create message"}))
+		return
+	}
+	r.store.UpdateDraftStatus(c.Context(), data.DraftID, proto.DraftSent)
+	r.hub.SendNewMessage(d.ChannelID, msg)
+	c.Send(websocket.NewEnvelope(websocket.EventDraftSend, map[string]string{"message_id": msg.ID, "status": "sent"}))
+}
+
+// --- Review WebSocket Handlers ---
+
+func (r *Router) handleWSReviewRequest(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() || !c.IsAgent() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+		return
+	}
+	var data websocket.ReviewRequestData
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid review request data"}))
+		return
+	}
+	if data.ReviewerID == "" || data.Subject == "" || data.Content == "" || data.ChannelID == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "reviewer_id, subject, content, and channel_id required"}))
+		return
+	}
+	member, err := r.store.GetMember(c.Context(), c.ID())
+	if err != nil || member == nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "agent not found"}))
+		return
+	}
+	rr := &proto.ReviewRequest{
+		WorkspaceID: member.WorkspaceID,
+		ChannelID:   data.ChannelID,
+		RequesterID: c.ID(),
+		ReviewerID:  data.ReviewerID,
+		Subject:     data.Subject,
+		Content:     data.Content,
+		Status:      proto.ReviewPending,
+	}
+	if err := r.store.CreateReviewRequest(c.Context(), rr); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to create review"}))
+		return
+	}
+	// Post message to channel
+	msg := &proto.Message{
+		ChannelID: data.ChannelID,
+		SenderID:  c.ID(),
+		Content:   fmt.Sprintf("Review requested: %s", data.Subject),
+		Type:      "text",
+		Metadata:  json.RawMessage(fmt.Sprintf(`{"type":"review_request","review_id":"%s"}`, rr.ID)),
+	}
+	r.store.CreateMessage(c.Context(), msg)
+	r.hub.SendNewMessage(data.ChannelID, msg)
+	// Create inbox notification for reviewer
+	n := &proto.Notification{
+		MemberID:    data.ReviewerID,
+		Type:        "review_request",
+		Title:       "Review requested",
+		Body:        fmt.Sprintf("%s requested your review: %s", member.Name, data.Subject),
+		ChannelID:   data.ChannelID,
+		MessageID:   msg.ID,
+		SourceType:  "review_request",
+		Priority:    "high",
+		AckRequired: true,
+		Payload:     fmt.Sprintf(`{"review_id":"%s","channel_id":"%s"}`, rr.ID, data.ChannelID),
+	}
+	r.store.CreateNotification(c.Context(), n)
+	if reviewerConn := r.hub.GetConn(data.ReviewerID); reviewerConn != nil {
+		reviewerConn.Send(websocket.NewEnvelope(websocket.EventNotificationNew, n))
+	}
+	c.Send(websocket.NewEnvelope(websocket.EventReviewRequest, map[string]string{"review_id": rr.ID, "status": "pending"}))
+}
+
+func (r *Router) handleWSReviewResult(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() || !c.IsAgent() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+		return
+	}
+	var data websocket.ReviewResultData
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid review result data"}))
+		return
+	}
+	if data.ReviewID == "" || data.Status == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "review_id and status required"}))
+		return
+	}
+	rr, err := r.store.GetReviewRequest(c.Context(), data.ReviewID)
+	if err != nil || rr == nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "review not found"}))
+		return
+	}
+	if rr.ReviewerID != c.ID() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not the reviewer"}))
+		return
+	}
+	rr.Status = proto.ReviewStatus(data.Status)
+	rr.ReviewComment = data.Comment
+	if data.Status == string(proto.ReviewApproved) || data.Status == string(proto.ReviewChangesRequired) {
+		rr.ReviewedAt = time.Now().UnixMilli()
+	}
+	if err := r.store.UpdateReviewRequest(c.Context(), rr); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to update review"}))
+		return
+	}
+	// Post result to channel
+	msg := &proto.Message{
+		ChannelID: rr.ChannelID,
+		SenderID:  c.ID(),
+		Content:   fmt.Sprintf("Review %s: %s", data.Status, data.Comment),
+		Type:      "text",
+	}
+	r.store.CreateMessage(c.Context(), msg)
+	r.hub.SendNewMessage(rr.ChannelID, msg)
+	// Notify requester
+	n := &proto.Notification{
+		MemberID:   rr.RequesterID,
+		Type:       "review_result",
+		Title:      "Review completed",
+		Body:       fmt.Sprintf("Your review was %s", data.Status),
+		ChannelID:  rr.ChannelID,
+		SourceType: "review_result",
+		Priority:   "high",
+	}
+	r.store.CreateNotification(c.Context(), n)
+	if requesterConn := r.hub.GetConn(rr.RequesterID); requesterConn != nil {
+		requesterConn.Send(websocket.NewEnvelope(websocket.EventNotificationNew, n))
+	}
+	c.Send(websocket.NewEnvelope(websocket.EventReviewResult, map[string]string{"review_id": rr.ID, "status": string(rr.Status)}))
+}
+
+// --- Agent Workspace WebSocket Handler ---
+
+func (r *Router) handleWSWorkspaceUpdate(c *websocket.Conn, env websocket.Envelope) {
+	if !c.IsAuthenticated() || !c.IsAgent() {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not authorized"}))
+		return
+	}
+	var data websocket.WorkspaceUpdateData
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "invalid workspace update data"}))
+		return
+	}
+	if data.Name == "" {
+		c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "name is required"}))
+		return
+	}
+	if data.ItemID != "" {
+		// Update existing item
+		existing, err := r.store.GetWorkspaceItem(c.Context(), data.ItemID)
+		if err != nil || existing == nil {
+			c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "item not found"}))
+			return
+		}
+		if existing.AgentID != c.ID() {
+			c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "not your workspace item"}))
+			return
+		}
+		existing.Name = data.Name
+		if data.Content != "" {
+			existing.Content = data.Content
+		}
+		if data.Namespace != "" {
+			existing.Namespace = data.Namespace
+		}
+		if data.Description != "" {
+			existing.Description = data.Description
+		}
+		if len(data.Tags) > 0 {
+			existing.Tags = data.Tags
+		}
+		if err := r.store.UpdateWorkspaceItem(c.Context(), existing); err != nil {
+			c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to update item"}))
+			return
+		}
+		c.Send(websocket.NewEnvelope(websocket.EventWorkspaceUpdate, existing))
+	} else {
+		// Create new item
+		member, err := r.store.GetMember(c.Context(), c.ID())
+		if err != nil || member == nil {
+			c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "agent not found"}))
+			return
+		}
+		ns := data.Namespace
+		if ns == "" {
+			ns = "default"
+		}
+		item := &proto.AgentWorkspaceItem{
+			AgentID:     c.ID(),
+			WorkspaceID: member.WorkspaceID,
+			Name:        data.Name,
+			Content:     data.Content,
+			Namespace:   ns,
+			Description: data.Description,
+			Tags:        data.Tags,
+			MimeType:    "text/plain",
+		}
+		if err := r.store.CreateWorkspaceItem(c.Context(), item); err != nil {
+			c.Send(websocket.NewEnvelope(websocket.EventError, map[string]string{"error": "failed to create item"}))
+			return
+		}
+		c.Send(websocket.NewEnvelope(websocket.EventWorkspaceUpdate, item))
 	}
 }

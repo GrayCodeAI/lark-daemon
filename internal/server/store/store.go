@@ -6,6 +6,15 @@ import (
 	"lark-daemon/internal/proto"
 )
 
+// InboxOptions configures agent inbox queries.
+type InboxOptions struct {
+	UnreadOnly bool
+	SourceType string
+	Priority   string
+	Since      int64
+	Limit      int
+}
+
 // Store defines the data access interface.
 type Store interface {
 	// Workspace operations.
@@ -191,6 +200,42 @@ type Store interface {
 	MarkNotificationRead(ctx context.Context, id string) error
 	MarkAllNotificationsRead(ctx context.Context, memberID string) error
 	CountUnreadNotifications(ctx context.Context, memberID string) (int, error)
+
+	// Agent inbox (extends notifications with agent-specific fields).
+	ListAgentInbox(ctx context.Context, agentID string, opts InboxOptions) ([]*proto.Notification, error)
+	AckInboxItem(ctx context.Context, id string) error
+	AckAllInbox(ctx context.Context, agentID string) error
+	CountAgentInbox(ctx context.Context, agentID string) (int, error)
+
+	// Held drafts.
+	CreateDraft(ctx context.Context, d *proto.HeldDraft) error
+	GetDraft(ctx context.Context, id string) (*proto.HeldDraft, error)
+	ListDrafts(ctx context.Context, agentID string, status string) ([]*proto.HeldDraft, error)
+	UpdateDraftStatus(ctx context.Context, id string, status proto.HeldDraftStatus) error
+	DeleteDraft(ctx context.Context, id string) error
+	GetChannelRoomVersion(ctx context.Context, channelID string) (int64, error)
+	ExpireDrafts(ctx context.Context) error
+
+	// Agent workspace.
+	CreateWorkspaceItem(ctx context.Context, item *proto.AgentWorkspaceItem) error
+	GetWorkspaceItem(ctx context.Context, id string) (*proto.AgentWorkspaceItem, error)
+	GetWorkspaceItemByName(ctx context.Context, agentID, namespace, name string) (*proto.AgentWorkspaceItem, error)
+	ListWorkspaceItems(ctx context.Context, agentID string, namespace string) ([]*proto.AgentWorkspaceItem, error)
+	UpdateWorkspaceItem(ctx context.Context, item *proto.AgentWorkspaceItem) error
+	DeleteWorkspaceItem(ctx context.Context, id string) error
+	SearchWorkspaceItems(ctx context.Context, agentID string, query string) ([]*proto.AgentWorkspaceItem, error)
+
+	// Review requests.
+	CreateReviewRequest(ctx context.Context, r *proto.ReviewRequest) error
+	GetReviewRequest(ctx context.Context, id string) (*proto.ReviewRequest, error)
+	ListReviewRequests(ctx context.Context, reviewerID string, status string) ([]*proto.ReviewRequest, error)
+	UpdateReviewRequest(ctx context.Context, r *proto.ReviewRequest) error
+
+	// Team templates.
+	CreateTeamTemplate(ctx context.Context, t *proto.TeamTemplate) error
+	GetTeamTemplate(ctx context.Context, id string) (*proto.TeamTemplate, error)
+	ListTeamTemplates(ctx context.Context, workspaceID string) ([]*proto.TeamTemplate, error)
+	DeleteTeamTemplate(ctx context.Context, id string) error
 
 	// Lifecycle.
 	Ping(ctx context.Context) error

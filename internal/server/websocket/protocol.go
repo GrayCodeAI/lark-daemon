@@ -73,6 +73,25 @@ const (
 	EventApprovalRequest = "approval.request"
 	EventApprovalResult  = "approval.result"
 
+	// Agent inbox
+	EventInboxPoll  = "inbox.poll"
+	EventInboxItems = "inbox.items"
+	EventInboxAck   = "inbox.ack"
+
+	// Held drafts
+	EventDraftCreate   = "draft.create"
+	EventDraftAck      = "draft.ack"
+	EventDraftValidate = "draft.validate"
+	EventDraftResult   = "draft.result"
+	EventDraftSend     = "draft.send"
+
+	// Reviews
+	EventReviewRequest = "review.request"
+	EventReviewResult  = "review.result"
+
+	// Agent workspace
+	EventWorkspaceUpdate = "workspace.update"
+
 	EventError = "error"
 )
 
@@ -139,4 +158,74 @@ type ThreadReplyData struct {
 	Content   string          `json:"content"`
 	Type      string          `json:"type,omitempty"`
 	Metadata  json.RawMessage `json:"metadata,omitempty"`
+}
+
+// Inbox event data types.
+
+type InboxPollData struct {
+	SourceType string `json:"source_type,omitempty"`
+	UnreadOnly bool   `json:"unread_only,omitempty"`
+	Since      int64  `json:"since,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+}
+
+type InboxAckData struct {
+	ItemID string `json:"item_id"`
+}
+
+// Draft event data types.
+
+type DraftCreateData struct {
+	ChannelID string `json:"channel_id"`
+	Content   string `json:"content"`
+	ThreadID  string `json:"thread_id,omitempty"`
+}
+
+type DraftAckData struct {
+	DraftID      string `json:"draft_id"`
+	RoomVersion  int64  `json:"room_version"`
+}
+
+type DraftValidateData struct {
+	DraftID string `json:"draft_id"`
+}
+
+type DraftResultData struct {
+	DraftID        string        `json:"draft_id"`
+	Valid          bool          `json:"valid"`
+	CurrentVersion int64         `json:"current_version"`
+	DraftVersion   int64         `json:"draft_version"`
+	VersionDelta   int64         `json:"version_delta"`
+	RecentMessages []interface{} `json:"recent_messages,omitempty"`
+}
+
+type DraftSendData struct {
+	DraftID      string `json:"draft_id"`
+	ForceVersion bool   `json:"force_version,omitempty"`
+}
+
+// Review event data types.
+
+type ReviewRequestData struct {
+	ReviewerID string `json:"reviewer_id"`
+	Subject    string `json:"subject"`
+	Content    string `json:"content"`
+	ChannelID  string `json:"channel_id"`
+}
+
+type ReviewResultData struct {
+	ReviewID  string `json:"review_id"`
+	Status    string `json:"status"`
+	Comment   string `json:"comment,omitempty"`
+}
+
+// Workspace event data types.
+
+type WorkspaceUpdateData struct {
+	ItemID      string   `json:"item_id,omitempty"`
+	Name        string   `json:"name"`
+	Content     string   `json:"content,omitempty"`
+	Namespace   string   `json:"namespace,omitempty"`
+	Description string   `json:"description,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
 }

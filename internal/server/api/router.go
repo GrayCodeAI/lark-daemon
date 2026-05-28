@@ -70,7 +70,6 @@ func NewRouter(services *service.Services, st store.Store, hub *websocket.Hub, a
 
 func (r *Router) setupMiddleware() {
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeadersMiddleware)
 	r.Use(requestLoggerMiddleware(r.logger))
@@ -189,6 +188,9 @@ func requireAdmin(w http.ResponseWriter, req *http.Request) *proto.Member {
 
 
 func (r *Router) setupRoutes() {
+	// llms.txt — machine-readable platform description for LLMs (no auth required)
+	r.Get("/llms.txt", r.handleLLMsTxt)
+
 	// Health check — no rate limiting
 	r.Get("/health", func(w http.ResponseWriter, req *http.Request) {
 		ctx, cancel := context.WithTimeout(req.Context(), 3*time.Second)
@@ -381,6 +383,40 @@ func (r *Router) setupRoutes() {
 			p.Post("/workspaces/{id}/webhooks", r.handleCreateWebhook)
 			p.Get("/workspaces/{id}/webhooks", r.handleListWebhooks)
 			p.Delete("/webhooks/{id}", r.handleDeleteWebhook)
+
+			// Agent inbox (pull-based)
+			p.Get("/agents/{id}/inbox", r.handleListAgentInbox)
+			p.Get("/agents/{id}/inbox/count", r.handleCountAgentInbox)
+			p.Post("/agents/{id}/inbox/{itemID}/ack", r.handleAckInboxItem)
+			p.Post("/agents/{id}/inbox/ack-all", r.handleAckAllInbox)
+
+			// Held drafts
+			p.Post("/agents/{id}/drafts", r.handleCreateDraft)
+			p.Get("/agents/{id}/drafts", r.handleListDrafts)
+			p.Post("/drafts/{id}/validate", r.handleValidateDraft)
+			p.Post("/drafts/{id}/send", r.handleSendDraft)
+			p.Delete("/drafts/{id}", r.handleCancelDraft)
+
+			// Agent workspace
+			p.Post("/agents/{id}/workspace", r.handleCreateWorkspaceItem)
+			p.Get("/agents/{id}/workspace", r.handleListWorkspaceItems)
+			p.Get("/agents/{id}/workspace/search", r.handleSearchWorkspaceItems)
+			p.Get("/agents/{id}/workspace/{itemID}", r.handleGetWorkspaceItem)
+			p.Put("/agents/{id}/workspace/{itemID}", r.handleUpdateWorkspaceItem)
+			p.Delete("/agents/{id}/workspace/{itemID}", r.handleDeleteWorkspaceItem)
+
+			// Reviews
+			p.Post("/workspaces/{id}/reviews", r.handleCreateReview)
+			p.Get("/workspaces/{id}/reviews", r.handleListReviews)
+			p.Get("/reviews/{id}", r.handleGetReview)
+			p.Patch("/reviews/{id}", r.handleUpdateReview)
+
+			// Team templates
+			p.Get("/workspaces/{id}/templates", r.handleListTemplates)
+			p.Post("/workspaces/{id}/templates", r.handleCreateTemplate)
+			p.Get("/templates/{id}", r.handleGetTemplate)
+			p.Delete("/templates/{id}", r.handleDeleteTemplate)
+			p.Post("/templates/{id}/instantiate", r.handleInstantiateTemplate)
 		})
 	})
 

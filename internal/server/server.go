@@ -166,6 +166,25 @@ func (s *Server) Run() error {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
 	errCh := make(chan error, 1)
+
+	// Background goroutine: expire old drafts every 2 minutes
+	draftCtx, draftCancel := context.WithCancel(context.Background())
+	defer draftCancel()
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-draftCtx.Done():
+				return
+			case <-ticker.C:
+				if err := s.store.ExpireDrafts(context.Background()); err != nil {
+					s.logger.Error("expire drafts failed", "err", err)
+				}
+			}
+		}
+	}()
+
 	go func() {
 		var err error
 		if s.config.TLSCert != "" && s.config.TLSKey != "" {

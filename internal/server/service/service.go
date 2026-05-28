@@ -25,7 +25,11 @@ func (s *Services) CreateWorkspace(ctx context.Context, ws *proto.Workspace) err
 	if ws.Slug == "" {
 		return fmt.Errorf("slug is required")
 	}
-	ws.AgentProvisionToken = websocket.GenerateProvisionToken()
+	token, err := websocket.GenerateProvisionToken()
+	if err != nil {
+		return fmt.Errorf("generate provision token: %w", err)
+	}
+	ws.AgentProvisionToken = token
 	return s.store.CreateWorkspace(ctx, ws)
 }
 
@@ -49,7 +53,11 @@ func (s *Services) DeleteWorkspace(ctx context.Context, id string) error {
 
 func (s *Services) CreateMember(ctx context.Context, m *proto.Member) error {
 	if m.Type == proto.MemberAgent && m.APIKey == "" {
-		m.APIKey = websocket.GenerateAPIKey(proto.AgentAPIKeyPrefix)
+		key, err := websocket.GenerateAPIKey(proto.AgentAPIKeyPrefix)
+		if err != nil {
+			return fmt.Errorf("generate api key: %w", err)
+		}
+		m.APIKey = key
 	}
 	return s.store.CreateMember(ctx, m)
 }
@@ -291,7 +299,11 @@ func (s *Services) UpdateApproval(ctx context.Context, a *proto.ApprovalRequest)
 // --- Webhooks ---
 
 func (s *Services) CreateWebhook(ctx context.Context, w *proto.Webhook) error {
-	w.Secret = websocket.GenerateAPIKey("wh_")
+	secret, err := websocket.GenerateAPIKey("wh_")
+	if err != nil {
+		return fmt.Errorf("generate webhook secret: %w", err)
+	}
+	w.Secret = secret
 	return s.store.CreateWebhook(ctx, w)
 }
 
@@ -351,6 +363,120 @@ func (s *Services) MarkAllNotificationsRead(ctx context.Context, memberID string
 
 func (s *Services) CountUnreadNotifications(ctx context.Context, memberID string) (int, error) {
 	return s.store.CountUnreadNotifications(ctx, memberID)
+}
+
+// --- Agent Inbox ---
+
+func (s *Services) ListAgentInbox(ctx context.Context, agentID string, opts store.InboxOptions) ([]*proto.Notification, error) {
+	return s.store.ListAgentInbox(ctx, agentID, opts)
+}
+
+func (s *Services) AckInboxItem(ctx context.Context, id string) error {
+	return s.store.AckInboxItem(ctx, id)
+}
+
+func (s *Services) AckAllInbox(ctx context.Context, agentID string) error {
+	return s.store.AckAllInbox(ctx, agentID)
+}
+
+func (s *Services) CountAgentInbox(ctx context.Context, agentID string) (int, error) {
+	return s.store.CountAgentInbox(ctx, agentID)
+}
+
+// --- Held Drafts ---
+
+func (s *Services) CreateDraft(ctx context.Context, d *proto.HeldDraft) error {
+	return s.store.CreateDraft(ctx, d)
+}
+
+func (s *Services) GetDraft(ctx context.Context, id string) (*proto.HeldDraft, error) {
+	return s.store.GetDraft(ctx, id)
+}
+
+func (s *Services) ListDrafts(ctx context.Context, agentID string, status string) ([]*proto.HeldDraft, error) {
+	return s.store.ListDrafts(ctx, agentID, status)
+}
+
+func (s *Services) UpdateDraftStatus(ctx context.Context, id string, status proto.HeldDraftStatus) error {
+	return s.store.UpdateDraftStatus(ctx, id, status)
+}
+
+func (s *Services) DeleteDraft(ctx context.Context, id string) error {
+	return s.store.DeleteDraft(ctx, id)
+}
+
+func (s *Services) GetChannelRoomVersion(ctx context.Context, channelID string) (int64, error) {
+	return s.store.GetChannelRoomVersion(ctx, channelID)
+}
+
+func (s *Services) ExpireDrafts(ctx context.Context) error {
+	return s.store.ExpireDrafts(ctx)
+}
+
+// --- Agent Workspace ---
+
+func (s *Services) CreateWorkspaceItem(ctx context.Context, item *proto.AgentWorkspaceItem) error {
+	return s.store.CreateWorkspaceItem(ctx, item)
+}
+
+func (s *Services) GetWorkspaceItem(ctx context.Context, id string) (*proto.AgentWorkspaceItem, error) {
+	return s.store.GetWorkspaceItem(ctx, id)
+}
+
+func (s *Services) GetWorkspaceItemByName(ctx context.Context, agentID, namespace, name string) (*proto.AgentWorkspaceItem, error) {
+	return s.store.GetWorkspaceItemByName(ctx, agentID, namespace, name)
+}
+
+func (s *Services) ListWorkspaceItems(ctx context.Context, agentID string, namespace string) ([]*proto.AgentWorkspaceItem, error) {
+	return s.store.ListWorkspaceItems(ctx, agentID, namespace)
+}
+
+func (s *Services) UpdateWorkspaceItem(ctx context.Context, item *proto.AgentWorkspaceItem) error {
+	return s.store.UpdateWorkspaceItem(ctx, item)
+}
+
+func (s *Services) DeleteWorkspaceItem(ctx context.Context, id string) error {
+	return s.store.DeleteWorkspaceItem(ctx, id)
+}
+
+func (s *Services) SearchWorkspaceItems(ctx context.Context, agentID string, query string) ([]*proto.AgentWorkspaceItem, error) {
+	return s.store.SearchWorkspaceItems(ctx, agentID, query)
+}
+
+// --- Review Requests ---
+
+func (s *Services) CreateReviewRequest(ctx context.Context, r *proto.ReviewRequest) error {
+	return s.store.CreateReviewRequest(ctx, r)
+}
+
+func (s *Services) GetReviewRequest(ctx context.Context, id string) (*proto.ReviewRequest, error) {
+	return s.store.GetReviewRequest(ctx, id)
+}
+
+func (s *Services) ListReviewRequests(ctx context.Context, reviewerID string, status string) ([]*proto.ReviewRequest, error) {
+	return s.store.ListReviewRequests(ctx, reviewerID, status)
+}
+
+func (s *Services) UpdateReviewRequest(ctx context.Context, r *proto.ReviewRequest) error {
+	return s.store.UpdateReviewRequest(ctx, r)
+}
+
+// --- Team Templates ---
+
+func (s *Services) CreateTeamTemplate(ctx context.Context, t *proto.TeamTemplate) error {
+	return s.store.CreateTeamTemplate(ctx, t)
+}
+
+func (s *Services) GetTeamTemplate(ctx context.Context, id string) (*proto.TeamTemplate, error) {
+	return s.store.GetTeamTemplate(ctx, id)
+}
+
+func (s *Services) ListTeamTemplates(ctx context.Context, workspaceID string) ([]*proto.TeamTemplate, error) {
+	return s.store.ListTeamTemplates(ctx, workspaceID)
+}
+
+func (s *Services) DeleteTeamTemplate(ctx context.Context, id string) error {
+	return s.store.DeleteTeamTemplate(ctx, id)
 }
 
 // --- Integrations ---

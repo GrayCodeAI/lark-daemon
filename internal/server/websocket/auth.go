@@ -87,16 +87,16 @@ func (a *AuthService) ValidateToken(tokenStr string, blacklist TokenBlacklist) (
 }
 
 // GenerateAPIKey generates a random API key with the given prefix.
-func GenerateAPIKey(prefix string) string {
+func GenerateAPIKey(prefix string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		panic("crypto/rand.Read failed: " + err.Error())
+		return "", fmt.Errorf("generate api key: %w", err)
 	}
-	return prefix + hex.EncodeToString(b)
+	return prefix + hex.EncodeToString(b), nil
 }
 
 // GenerateProvisionToken generates a provision token for a workspace.
-func GenerateProvisionToken() string {
+func GenerateProvisionToken() (string, error) {
 	return GenerateAPIKey(proto.AgentProvisionTokenPrefix)
 }
 

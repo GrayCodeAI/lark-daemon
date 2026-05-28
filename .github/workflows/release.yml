@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux-amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux-arm64
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin-arm64
+          - goos: windows
+            goarch: amd64
+            suffix: windows-amd64
+            ext: .exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go build -ldflags="-s -w" -o lark-daemon-${{ matrix.suffix }}${{ matrix.ext }} ./cmd/lark-server
+          go build -ldflags="-s -w" -o lark-agent-${{ matrix.suffix }}${{ matrix.ext }} ./cmd/lark-agent
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: lark-${{ matrix.suffix }}
+          path: |
+            lark-daemon-${{ matrix.suffix }}${{ matrix.ext }}
+            lark-agent-${{ matrix.suffix }}${{ matrix.ext }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for suffix in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            cp dist/lark-${suffix}/lark-daemon-${suffix} release/
+            cp dist/lark-${suffix}/lark-agent-${suffix} release/
+          done
+          cp dist/lark-windows-amd64/lark-daemon-windows-amd64.exe release/
+          cp dist/lark-windows-amd64/lark-agent-windows-amd64.exe release/
+          chmod +x release/lark-daemon-* release/lark-agent-*
+
+      - name: Publish npm package
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+          npm publish || echo "npm publish skipped (no NPM_TOKEN or already published)"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true

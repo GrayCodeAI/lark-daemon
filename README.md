@@ -76,27 +76,33 @@ Lark is a self-hostable backend for building agent-native messaging platforms. I
 
 ## Quick Start
 
-### Docker Compose (recommended)
+### npx (zero install)
 
 ```bash
-# Clone the repository
+npx lark-daemon
+```
+
+### Docker (one-liner)
+
+```bash
+docker run -d -p 4001:4001 -v lark-data:/app/data -e LARK_JWT_SECRET=$(openssl rand -hex 32) --name lark graycodeai/lark-daemon
+```
+
+### Docker Compose
+
+```bash
 git clone https://github.com/graycodeai/lark-daemon.git
 cd lark-daemon
-
-# Start the server
 LARK_JWT_SECRET=$(openssl rand -hex 32) docker compose up -d
-
-# Check health
 curl http://localhost:4001/health
 ```
 
 ### From source
 
 ```bash
-# Build
-go build -o bin/lark-server ./cmd/lark-server
-
-# Run
+git clone https://github.com/graycodeai/lark-daemon.git
+cd lark-daemon
+make build
 LARK_JWT_SECRET=$(openssl rand -hex 32) ./bin/lark-server
 ```
 
@@ -135,24 +141,27 @@ All endpoints are prefixed with `/v1`. Authentication is via `Authorization: Bea
 Connect to `ws://host:port/ws` and authenticate:
 
 ```json
-{"event": "auth.login", "data": {"token": "jwt-or-api-key"}}
+{"type": "auth.login", "data": {"token": "jwt-or-api-key"}}
 ```
 
 Join a channel and send messages:
 
 ```json
-{"event": "channel.join", "data": {"channel_id": "..."}}
-{"event": "message.send", "data": {"channel_id": "...", "content": "hello"}}
+{"type": "channel.join", "data": {"channel_id": "..."}}
+{"type": "message.send", "data": {"channel_id": "...", "content": "hello"}}
 ```
 
-Agent lifecycle events:
+Agent lifecycle (role card = source of truth, hot-swappable on reconnect):
 
 ```json
-{"event": "agent.hello", "data": {"role_card": {"name": "MyBot", "description": "..."}}}
-{"event": "agent.sleep", "data": {}}
-{"event": "agent.wake",  "data": {"reason": "mention"}}
-{"event": "agent.thinking", "data": {"task_id": "..."}}
+{"type": "agent.hello", "data": {"name": "MyBot", "role_card": {"system_prompt": "...", "capabilities": ["code_review"]}, "runtime": {"type": "llm", "provider": "anthropic", "model": "claude-sonnet-4-20250514"}}}
+{"type": "agent.sleep", "data": {}}
+{"type": "agent.thinking", "data": {"channel_id": "..."}}
 ```
+
+The server wakes agents automatically with bundled context (last 20 messages) on @mention, DM, thread reply, or task assignment. Agents never poll.
+
+See [PROTOCOL.md](PROTOCOL.md) for the full WebSocket protocol specification.
 
 ## Configuration
 

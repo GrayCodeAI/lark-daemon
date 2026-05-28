@@ -61,7 +61,7 @@ func TestUsageGetEmpty(t *testing.T) {
 
 	// usage may be nil or empty array
 	usage, _ := out["usage"].([]any)
-	if usage != nil && len(usage) != 0 {
+	if len(usage) != 0 {
 		t.Fatalf("expected 0 usage, got %d", len(usage))
 	}
 	if out["plan"] != "free" {

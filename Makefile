@@ -1,10 +1,11 @@
-.PHONY: build test lint run docker-build docker-up docker-down clean fmt tidy
+.PHONY: build test lint run docker-build docker-up docker-down clean fmt tidy npm-publish release-build
 
 # ---------- Build ----------
 
-## Build the server binary.
+## Build all binaries.
 build:
 	go build -ldflags="-s -w" -o bin/lark-server ./cmd/lark-server
+	go build -ldflags="-s -w" -o bin/lark-agent ./cmd/lark-agent
 
 # ---------- Test ----------
 
@@ -51,3 +52,17 @@ tidy:
 ## Remove build artifacts and runtime data.
 clean:
 	rm -rf bin/ data/ coverage.out
+
+# ---------- Release ----------
+
+## Build binaries for all platforms.
+release-build:
+	GOOS=linux  GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/lark-daemon-linux-amd64  ./cmd/lark-server
+	GOOS=linux  GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/lark-daemon-linux-arm64  ./cmd/lark-server
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/lark-daemon-darwin-amd64 ./cmd/lark-server
+	GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/lark-daemon-darwin-arm64 ./cmd/lark-server
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/lark-daemon-windows-amd64.exe ./cmd/lark-server
+
+## Publish the npm wrapper package.
+npm-publish:
+	cd npm && npm publish

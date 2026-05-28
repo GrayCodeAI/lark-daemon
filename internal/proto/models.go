@@ -109,6 +109,7 @@ type Channel struct {
 	Topic       string      `json:"topic,omitempty"`
 	IsPrivate   bool        `json:"is_private"`
 	IsArchived  bool        `json:"is_archived,omitempty"`
+	RoomVersion int64       `json:"room_version"`
 	CreatedAt   int64       `json:"created_at"`
 	UpdatedAt   int64       `json:"updated_at"`
 }
@@ -280,15 +281,21 @@ type OAuthIdentity struct {
 
 // Notification represents an in-app notification for a member.
 type Notification struct {
-	ID        string `json:"id"`
-	MemberID  string `json:"member_id"`
-	Type      string `json:"type"`
-	Title     string `json:"title"`
-	Body      string `json:"body,omitempty"`
-	ChannelID string `json:"channel_id,omitempty"`
-	MessageID string `json:"message_id,omitempty"`
-	IsRead    bool   `json:"is_read"`
-	CreatedAt int64  `json:"created_at"`
+	ID          string `json:"id"`
+	MemberID    string `json:"member_id"`
+	Type        string `json:"type"`
+	Title       string `json:"title"`
+	Body        string `json:"body,omitempty"`
+	ChannelID   string `json:"channel_id,omitempty"`
+	MessageID   string `json:"message_id,omitempty"`
+	IsRead      bool   `json:"is_read"`
+	SourceType  string `json:"source_type,omitempty"`
+	Priority    string `json:"priority,omitempty"`
+	AckRequired bool   `json:"ack_required,omitempty"`
+	AckedAt     int64  `json:"acked_at,omitempty"`
+	ExpiresAt   int64  `json:"expires_at,omitempty"`
+	Payload     string `json:"payload,omitempty"`
+	CreatedAt   int64  `json:"created_at"`
 }
 
 // IntegrationType defines integration types.
@@ -529,4 +536,105 @@ func GetPlanLimits(plan BillingPlan) PlanLimits {
 			MaxAgents:     2,
 		}
 	}
+}
+
+// HeldDraftStatus defines draft states.
+type HeldDraftStatus string
+
+const (
+	DraftHeld      HeldDraftStatus = "held"
+	DraftSent      HeldDraftStatus = "sent"
+	DraftExpired   HeldDraftStatus = "expired"
+	DraftCancelled HeldDraftStatus = "cancelled"
+)
+
+// HeldDraft represents a draft message held for room-version validation.
+type HeldDraft struct {
+	ID          string          `json:"id"`
+	AgentID     string          `json:"agent_id"`
+	ChannelID   string          `json:"channel_id"`
+	Content     string          `json:"content"`
+	ThreadID    string          `json:"thread_id,omitempty"`
+	RoomVersion int64           `json:"room_version"`
+	Status      HeldDraftStatus `json:"status"`
+	CreatedAt   int64           `json:"created_at"`
+	UpdatedAt   int64           `json:"updated_at"`
+	ExpiresAt   int64           `json:"expires_at,omitempty"`
+}
+
+// AgentWorkspaceItem represents a file or note in an agent's workspace.
+type AgentWorkspaceItem struct {
+	ID          string   `json:"id"`
+	AgentID     string   `json:"agent_id"`
+	WorkspaceID string   `json:"workspace_id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Content     string   `json:"content,omitempty"`
+	MimeType    string   `json:"mime_type"`
+	Size        int64    `json:"size"`
+	FileID      string   `json:"file_id,omitempty"`
+	Namespace   string   `json:"namespace"`
+	Tags        []string `json:"tags,omitempty"`
+	CreatedAt   int64    `json:"created_at"`
+	UpdatedAt   int64    `json:"updated_at"`
+}
+
+// ReviewStatus defines review request states.
+type ReviewStatus string
+
+const (
+	ReviewPending         ReviewStatus = "pending"
+	ReviewInReview        ReviewStatus = "in_review"
+	ReviewApproved        ReviewStatus = "approved"
+	ReviewChangesRequired ReviewStatus = "changes_requested"
+	ReviewCancelled       ReviewStatus = "cancelled"
+)
+
+// ReviewRequest represents an agent-to-agent review request.
+type ReviewRequest struct {
+	ID            string       `json:"id"`
+	WorkspaceID   string       `json:"workspace_id"`
+	ChannelID     string       `json:"channel_id"`
+	RequesterID   string       `json:"requester_id"`
+	ReviewerID    string       `json:"reviewer_id"`
+	Subject       string       `json:"subject"`
+	Content       string       `json:"content"`
+	ThreadID      string       `json:"thread_id,omitempty"`
+	Status        ReviewStatus `json:"status"`
+	ReviewComment string       `json:"review_comment,omitempty"`
+	CreatedAt     int64        `json:"created_at"`
+	UpdatedAt     int64        `json:"updated_at"`
+	ReviewedAt    int64        `json:"reviewed_at,omitempty"`
+}
+
+// TemplateRole defines an agent role within a team template.
+type TemplateRole struct {
+	Name         string   `json:"name"`
+	SystemPrompt string   `json:"system_prompt"`
+	Capabilities []string `json:"capabilities"`
+	Runtime      string   `json:"runtime,omitempty"`
+	Description  string   `json:"description,omitempty"`
+}
+
+// TemplateChannel defines a channel within a team template.
+type TemplateChannel struct {
+	Name      string   `json:"name"`
+	Topic     string   `json:"topic,omitempty"`
+	Members   []string `json:"members"`
+	IsPrivate bool     `json:"is_private,omitempty"`
+}
+
+// TeamTemplate represents a pre-built multi-agent team configuration.
+type TeamTemplate struct {
+	ID          string          `json:"id"`
+	WorkspaceID string          `json:"workspace_id,omitempty"`
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Category    string          `json:"category,omitempty"`
+	Roles       json.RawMessage `json:"roles"`
+	Channels    json.RawMessage `json:"channels,omitempty"`
+	IsBuiltin   bool            `json:"is_builtin"`
+	CreatedBy   string          `json:"created_by,omitempty"`
+	CreatedAt   int64           `json:"created_at"`
+	UpdatedAt   int64           `json:"updated_at"`
 }

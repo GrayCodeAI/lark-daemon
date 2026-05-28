@@ -1,0 +1,36 @@
+{
+  "name": "lark-daemon",
+  "version": "0.1.0",
+  "description": "Lark — agent-native messaging platform. Run your own server with a single command.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GrayCodeAI/lark-daemon.git"
+  },
+  "homepage": "https://github.com/GrayCodeAI/lark-daemon",
+  "bugs": {
+    "url": "https://github.com/GrayCodeAI/lark-daemon/issues"
+  },
+  "keywords": [
+    "lark",
+    "agent",
+    "messaging",
+    "collaboration",
+    "ai",
+    "websocket",
+    "sqlite"
+  ],
+  "bin": {
+    "lark-daemon": "bin/lark-daemon.js"
+  },
+  "files": [
+    "bin/",
+    "postinstall.js"
+  ],
+  "scripts": {
+    "postinstall": "node postinstall.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -16,9 +16,6 @@ import (
 
 const maxRetries = 3
 
-// schemaVersion tracks which migrations have been applied.
-const currentSchemaVersion = 10
-
 type SQLiteStore struct {
 	db *sql.DB
 }
@@ -58,7 +55,7 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 // runMigrations applies incremental schema migrations based on version tracking.
 func runMigrations(db *sql.DB) error {
 	var version int
-	db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version)
+	_ = db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`).Scan(&version)
 
 	migrations := []struct {
 		version int
@@ -224,20 +221,96 @@ CREATE TABLE IF NOT EXISTS usage_records (
     UNIQUE(workspace_id, metric, period_start)
 );
 CREATE INDEX IF NOT EXISTS idx_usage_workspace ON usage_records(workspace_id, metric, period_start);`},
+			{11, `ALTER TABLE notifications ADD COLUMN source_type TEXT DEFAULT 'system';
+ALTER TABLE notifications ADD COLUMN priority TEXT DEFAULT 'normal';
+ALTER TABLE notifications ADD COLUMN ack_required INTEGER DEFAULT 0;
+ALTER TABLE notifications ADD COLUMN acked_at INTEGER;
+ALTER TABLE notifications ADD COLUMN expires_at INTEGER;
+ALTER TABLE notifications ADD COLUMN payload TEXT;
+CREATE INDEX IF NOT EXISTS idx_notifications_agent_inbox ON notifications(member_id, is_read, source_type, created_at);`},
+			{12, `ALTER TABLE channels ADD COLUMN room_version INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS held_drafts (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    thread_id TEXT,
+    room_version INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'held' CHECK (status IN ('held', 'sent', 'expired', 'cancelled')),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_held_drafts_agent ON held_drafts(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_held_drafts_channel ON held_drafts(channel_id, status);
+CREATE TRIGGER IF NOT EXISTS trg_room_version_insert AFTER INSERT ON messages BEGIN UPDATE channels SET room_version = room_version + 1 WHERE id = NEW.channel_id; END`},
+			{13, `CREATE TABLE IF NOT EXISTS agent_workspace (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    description TEXT,
+    content TEXT,
+    mime_type TEXT DEFAULT 'text/plain',
+    size INTEGER DEFAULT 0,
+    file_id TEXT REFERENCES files(id) ON DELETE SET NULL,
+    namespace TEXT NOT NULL DEFAULT 'default',
+    tags TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    UNIQUE(agent_id, namespace, name)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_ws_agent ON agent_workspace(agent_id, namespace);`},
+			{14, `CREATE TABLE IF NOT EXISTS review_requests (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    requester_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    reviewer_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    subject TEXT NOT NULL,
+    content TEXT NOT NULL,
+    thread_id TEXT REFERENCES messages(id),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_review', 'approved', 'changes_requested', 'cancelled')),
+    review_comment TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    reviewed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_review_requests_reviewer ON review_requests(reviewer_id, status);
+CREATE INDEX IF NOT EXISTS idx_review_requests_channel ON review_requests(channel_id, status);`},
+			{15, `CREATE TABLE IF NOT EXISTS team_templates (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    name TEXT NOT NULL,
+    description TEXT,
+    category TEXT,
+    roles TEXT NOT NULL,
+    channels TEXT,
+    is_builtin INTEGER DEFAULT 0,
+    created_by TEXT REFERENCES members(id) ON DELETE SET NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_templates_ws ON team_templates(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_team_templates_category ON team_templates(category);
+
+INSERT OR IGNORE INTO team_templates (id, workspace_id, name, description, category, roles, channels, is_builtin, created_at, updated_at) VALUES ('tpl-investment-research', NULL, 'Investment Research Team', 'Multi-agent team for investment research: Librarian gathers data, Devil''s Advocate challenges thesis, Portfolio Watcher monitors positions, Scout finds new opportunities.', 'finance', '[{"name":"Librarian","system_prompt":"You are the Librarian agent. Your job is to gather, organize, and synthesize research data from multiple sources. Maintain a structured knowledge base of market data, company fundamentals, and macro trends. When asked, provide well-sourced summaries.","capabilities":["web_search","file_read","file_write"]},{"name":"Devil''s Advocate","system_prompt":"You are the Devil''s Advocate agent. Your job is to challenge investment theses by finding counterarguments, identifying risks, and stress-testing assumptions. Be rigorous but constructive.","capabilities":["web_search","file_read"]},{"name":"Portfolio Watcher","system_prompt":"You are the Portfolio Watcher agent. Monitor portfolio positions, track P&L, flag significant price movements, and alert the team when a position needs attention.","capabilities":["web_search","file_read","file_write"]},{"name":"Scout","system_prompt":"You are the Scout agent. Proactively search for new investment opportunities, emerging trends, and undervalued assets. Report findings to the team with supporting data.","capabilities":["web_search","file_write"]}]', '[{"name":"research","topic":"Research findings and data synthesis","members":["Librarian","Scout"]},{"name":"debate","topic":"Thesis challenges and risk analysis","members":["Librarian","Devil''s Advocate","Portfolio Watcher"]},{"name":"portfolio","topic":"Position monitoring and alerts","members":["Portfolio Watcher","Scout"]}]', 1, 0, 0);
+
+INSERT OR IGNORE INTO team_templates (id, workspace_id, name, description, category, roles, channels, is_builtin, created_at, updated_at) VALUES ('tpl-code-review', NULL, 'Code Review Team', 'Multi-agent team for code review: Reviewer analyzes code quality, SecurityAuditor checks for vulnerabilities, TestWriter suggests test coverage.', 'engineering', '[{"name":"Reviewer","system_prompt":"You are the Reviewer agent. Analyze code for quality, readability, maintainability, and adherence to best practices. Provide specific, actionable feedback with line references.","capabilities":["file_read","file_write"]},{"name":"SecurityAuditor","system_prompt":"You are the SecurityAuditor agent. Review code for security vulnerabilities including injection attacks, authentication flaws, data exposure, and OWASP Top 10 issues. Flag severity levels.","capabilities":["file_read","file_write"]},{"name":"TestWriter","system_prompt":"You are the TestWriter agent. Analyze code and suggest comprehensive test cases including unit tests, edge cases, and integration scenarios. Write test code when asked.","capabilities":["file_read","file_write"]}]', '[{"name":"review","topic":"Code review and quality feedback","members":["Reviewer","SecurityAuditor","TestWriter"]},{"name":"security","topic":"Security findings and vulnerability reports","members":["SecurityAuditor"]}]', 1, 0, 0);`},
 	}
 
 	for _, m := range migrations {
 		if m.version <= version {
 			continue
 		}
-		for _, stmt := range strings.Split(m.sql, ";") {
+		for _, stmt := range splitMigrationSQL(m.sql) {
 			stmt = strings.TrimSpace(stmt)
 			if stmt == "" {
 				continue
 			}
 			if _, err := db.Exec(stmt); err != nil {
 				// Ignore "duplicate column" errors for idempotency
-				if !strings.Contains(err.Error(), "duplicate column") {
+				if !strings.Contains(err.Error(), "duplicate column") && !strings.Contains(err.Error(), "already exists") {
 					return fmt.Errorf("migration %d: %w", m.version, err)
 				}
 			}
@@ -251,6 +324,62 @@ CREATE INDEX IF NOT EXISTS idx_usage_workspace ON usage_records(workspace_id, me
 
 func (s *SQLiteStore) Close() error {
 	return s.db.Close()
+}
+
+// splitMigrationSQL splits migration SQL on semicolons, but respects CREATE TRIGGER blocks
+// that contain BEGIN...END with internal semicolons.
+func splitMigrationSQL(sql string) []string {
+	var result []string
+
+	// Use a simpler approach: find CREATE TRIGGER...END blocks and treat them as single statements
+	upper := strings.ToUpper(sql)
+	for {
+		// Find next CREATE TRIGGER
+		trigIdx := strings.Index(upper, "CREATE TRIGGER")
+		if trigIdx < 0 {
+			// No more triggers, split remaining on semicolons
+			for _, s := range strings.Split(sql, ";") {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					result = append(result, s)
+				}
+			}
+			break
+		}
+
+		// Split everything before the trigger on semicolons
+		before := sql[:trigIdx]
+		for _, s := range strings.Split(before, ";") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				result = append(result, s)
+			}
+		}
+
+		// Find END after BEGIN
+		beginIdx := strings.Index(upper[trigIdx:], "BEGIN")
+		if beginIdx < 0 {
+			// Malformed trigger, just add as-is
+			result = append(result, strings.TrimSpace(sql[trigIdx:]))
+			break
+		}
+		absBegin := trigIdx + beginIdx
+		endIdx := strings.Index(upper[absBegin:], "END")
+		if endIdx < 0 {
+			result = append(result, strings.TrimSpace(sql[trigIdx:]))
+			break
+		}
+		absEnd := absBegin + endIdx + 3 // +3 for "END"
+		trigger := strings.TrimSpace(sql[trigIdx:absEnd])
+		result = append(result, trigger)
+
+		// Move past the trigger, skip optional trailing semicolon
+		sql = sql[absEnd:]
+		upper = upper[absEnd:]
+		sql = strings.TrimLeft(sql, "; \t\n")
+		upper = strings.TrimLeft(upper, "; \t\n")
+	}
+	return result
 }
 
 func (s *SQLiteStore) Ping(ctx context.Context) error {
@@ -583,9 +712,9 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, id string) (*proto.Channel
 	var chType string
 	var private, archived int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at
+		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, room_version, created_at, updated_at
 		 FROM channels WHERE id = ?`, id).
-		Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &chType, &ch.Topic, &private, &archived, &ch.CreatedAt, &ch.UpdatedAt)
+		Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &chType, &ch.Topic, &private, &archived, &ch.RoomVersion, &ch.CreatedAt, &ch.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -600,7 +729,7 @@ func (s *SQLiteStore) GetChannel(ctx context.Context, id string) (*proto.Channel
 
 func (s *SQLiteStore) ListChannels(ctx context.Context, workspaceID string) ([]*proto.Channel, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at
+		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, room_version, created_at, updated_at
 		 FROM channels WHERE workspace_id = ? ORDER BY name LIMIT 200`, workspaceID)
 	if err != nil {
 		return nil, err
@@ -617,7 +746,7 @@ func (s *SQLiteStore) ListChannelsPaginated(ctx context.Context, workspaceID str
 		offset = 0
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at
+		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, room_version, created_at, updated_at
 		 FROM channels WHERE workspace_id = ? ORDER BY name LIMIT ? OFFSET ?`, workspaceID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -632,7 +761,7 @@ func scanChannels(rows *sql.Rows) ([]*proto.Channel, error) {
 		ch := &proto.Channel{}
 		var chType string
 		var private, archived int
-		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &chType, &ch.Topic, &private, &archived, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &ch.Name, &chType, &ch.Topic, &private, &archived, &ch.RoomVersion, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 			return nil, err
 		}
 		ch.Type = proto.ChannelType(chType)
@@ -969,7 +1098,7 @@ func (s *SQLiteStore) SearchChannels(ctx context.Context, workspaceID, query str
 		limit = 20
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, created_at, updated_at
+		`SELECT id, workspace_id, name, type, topic, is_private, is_archived, room_version, created_at, updated_at
 		 FROM channels WHERE workspace_id = ? AND name LIKE ? ORDER BY name LIMIT ?`,
 		workspaceID, "%"+query+"%", limit)
 	if err != nil {
@@ -1327,7 +1456,7 @@ func (s *SQLiteStore) GetDMChannel(ctx context.Context, workspaceID string, memb
 
 func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*proto.Channel, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT c.id, c.workspace_id, c.name, c.type, c.topic, c.is_private, c.is_archived, c.created_at, c.updated_at
+		`SELECT c.id, c.workspace_id, c.name, c.type, c.topic, c.is_private, c.is_archived, c.room_version, c.created_at, c.updated_at
 		 FROM channels c JOIN channel_members cm ON c.id = cm.channel_id
 		 WHERE cm.member_id = ? AND c.type IN ('dm', 'group_dm')
 		 ORDER BY c.updated_at DESC LIMIT 200`,
@@ -1341,7 +1470,7 @@ func (s *SQLiteStore) ListDMChannels(ctx context.Context, memberID string) ([]*p
 		ch := &proto.Channel{}
 		var topic, name sql.NullString
 		var private, archived int
-		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &name, &ch.Type, &topic, &private, &archived, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		if err := rows.Scan(&ch.ID, &ch.WorkspaceID, &name, &ch.Type, &topic, &private, &archived, &ch.RoomVersion, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
 			return nil, err
 		}
 		ch.Name = name.String
@@ -1728,6 +1857,10 @@ func (s *SQLiteStore) CreateNotification(ctx context.Context, n *proto.Notificat
 	if n.IsRead {
 		isRead = 1
 	}
+	ackRequired := 0
+	if n.AckRequired {
+		ackRequired = 1
+	}
 	var channelID, messageID any
 	if n.ChannelID != "" {
 		channelID = n.ChannelID
@@ -1735,9 +1868,17 @@ func (s *SQLiteStore) CreateNotification(ctx context.Context, n *proto.Notificat
 	if n.MessageID != "" {
 		messageID = n.MessageID
 	}
+	sourceType := n.SourceType
+	if sourceType == "" {
+		sourceType = "system"
+	}
+	priority := n.Priority
+	if priority == "" {
+		priority = "normal"
+	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO notifications (id, member_id, type, title, body, channel_id, message_id, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		n.ID, n.MemberID, n.Type, n.Title, n.Body, channelID, messageID, isRead, n.CreatedAt)
+		`INSERT INTO notifications (id, member_id, type, title, body, channel_id, message_id, is_read, source_type, priority, ack_required, acked_at, expires_at, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ID, n.MemberID, n.Type, n.Title, n.Body, channelID, messageID, isRead, sourceType, priority, ackRequired, n.AckedAt, n.ExpiresAt, n.Payload, n.CreatedAt)
 	return err
 }
 
@@ -1745,7 +1886,7 @@ func (s *SQLiteStore) ListNotifications(ctx context.Context, memberID string, un
 	if limit <= 0 {
 		limit = 50
 	}
-	query := `SELECT id, member_id, type, title, body, channel_id, message_id, is_read, created_at FROM notifications WHERE member_id = ?`
+	query := `SELECT id, member_id, type, title, body, channel_id, message_id, is_read, source_type, priority, ack_required, acked_at, expires_at, payload, created_at FROM notifications WHERE member_id = ?`
 	args := []any{memberID}
 	if unreadOnly {
 		query += ` AND is_read = 0`
@@ -1760,14 +1901,22 @@ func (s *SQLiteStore) ListNotifications(ctx context.Context, memberID string, un
 	var out []*proto.Notification
 	for rows.Next() {
 		n := &proto.Notification{}
-		var isRead int
+		var isRead, ackRequired int
 		var channelID, messageID sql.NullString
-		if err := rows.Scan(&n.ID, &n.MemberID, &n.Type, &n.Title, &n.Body, &channelID, &messageID, &isRead, &n.CreatedAt); err != nil {
+		var sourceType, priority, payload sql.NullString
+		var ackedAt, expiresAt sql.NullInt64
+		if err := rows.Scan(&n.ID, &n.MemberID, &n.Type, &n.Title, &n.Body, &channelID, &messageID, &isRead, &sourceType, &priority, &ackRequired, &ackedAt, &expiresAt, &payload, &n.CreatedAt); err != nil {
 			return nil, err
 		}
 		n.ChannelID = channelID.String
 		n.MessageID = messageID.String
 		n.IsRead = isRead != 0
+		n.SourceType = sourceType.String
+		n.Priority = priority.String
+		n.AckRequired = ackRequired != 0
+		n.AckedAt = ackedAt.Int64
+		n.ExpiresAt = expiresAt.Int64
+		n.Payload = payload.String
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -2468,4 +2617,470 @@ func (s *SQLiteStore) ListUsageRecords(ctx context.Context, workspaceID string) 
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// --- Agent Inbox ---
+
+func (s *SQLiteStore) ListAgentInbox(ctx context.Context, agentID string, opts InboxOptions) ([]*proto.Notification, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `SELECT id, member_id, type, title, body, channel_id, message_id, is_read, source_type, priority, ack_required, acked_at, expires_at, payload, created_at FROM notifications WHERE member_id = ?`
+	args := []any{agentID}
+	if opts.UnreadOnly {
+		query += ` AND is_read = 0`
+	}
+	if opts.SourceType != "" {
+		query += ` AND source_type = ?`
+		args = append(args, opts.SourceType)
+	}
+	if opts.Priority != "" {
+		query += ` AND priority = ?`
+		args = append(args, opts.Priority)
+	}
+	if opts.Since > 0 {
+		query += ` AND created_at > ?`
+		args = append(args, opts.Since)
+	}
+	query += ` ORDER BY created_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows2, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows2.Close()
+	var out2 []*proto.Notification
+	for rows2.Next() {
+		n := &proto.Notification{}
+		var isRead, ackRequired int
+		var channelID, messageID sql.NullString
+		var sourceType, priority, payload sql.NullString
+		var ackedAt, expiresAt sql.NullInt64
+		if err := rows2.Scan(&n.ID, &n.MemberID, &n.Type, &n.Title, &n.Body, &channelID, &messageID, &isRead, &sourceType, &priority, &ackRequired, &ackedAt, &expiresAt, &payload, &n.CreatedAt); err != nil {
+			return nil, err
+		}
+		n.ChannelID = channelID.String
+		n.MessageID = messageID.String
+		n.IsRead = isRead != 0
+		n.SourceType = sourceType.String
+		n.Priority = priority.String
+		n.AckRequired = ackRequired != 0
+		n.AckedAt = ackedAt.Int64
+		n.ExpiresAt = expiresAt.Int64
+		n.Payload = payload.String
+		out2 = append(out2, n)
+	}
+	return out2, rows2.Err()
+}
+
+func (s *SQLiteStore) AckInboxItem(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE notifications SET acked_at = ?, is_read = 1 WHERE id = ?`, time.Now().UnixMilli(), id)
+	return err
+}
+
+func (s *SQLiteStore) AckAllInbox(ctx context.Context, agentID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE notifications SET acked_at = ?, is_read = 1 WHERE member_id = ? AND is_read = 0`, time.Now().UnixMilli(), agentID)
+	return err
+}
+
+func (s *SQLiteStore) CountAgentInbox(ctx context.Context, agentID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE member_id = ? AND is_read = 0`, agentID).Scan(&count)
+	return count, err
+}
+
+// --- Held Drafts ---
+
+func (s *SQLiteStore) CreateDraft(ctx context.Context, d *proto.HeldDraft) error {
+	if d.ID == "" {
+		d.ID = uuid.New().String()
+	}
+	now := time.Now().UnixMilli()
+	if d.CreatedAt == 0 {
+		d.CreatedAt = now
+	}
+	if d.UpdatedAt == 0 {
+		d.UpdatedAt = now
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO held_drafts (id, agent_id, channel_id, content, thread_id, room_version, status, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.AgentID, d.ChannelID, d.Content, d.ThreadID, d.RoomVersion, string(d.Status), d.CreatedAt, d.UpdatedAt, d.ExpiresAt)
+	return err
+}
+
+func (s *SQLiteStore) GetDraft(ctx context.Context, id string) (*proto.HeldDraft, error) {
+	d := &proto.HeldDraft{}
+	var status string
+	var threadID sql.NullString
+	var expiresAt sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, agent_id, channel_id, content, thread_id, room_version, status, created_at, updated_at, expires_at FROM held_drafts WHERE id = ?`, id).
+		Scan(&d.ID, &d.AgentID, &d.ChannelID, &d.Content, &threadID, &d.RoomVersion, &status, &d.CreatedAt, &d.UpdatedAt, &expiresAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	d.Status = proto.HeldDraftStatus(status)
+	d.ThreadID = threadID.String
+	d.ExpiresAt = expiresAt.Int64
+	return d, nil
+}
+
+func (s *SQLiteStore) ListDrafts(ctx context.Context, agentID string, status string) ([]*proto.HeldDraft, error) {
+	query := `SELECT id, agent_id, channel_id, content, thread_id, room_version, status, created_at, updated_at, expires_at FROM held_drafts WHERE agent_id = ?`
+	args := []any{agentID}
+	if status != "" {
+		query += ` AND status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC LIMIT 50`
+	rows3, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows3.Close()
+	var out3 []*proto.HeldDraft
+	for rows3.Next() {
+		d := &proto.HeldDraft{}
+		var st string
+		var threadID sql.NullString
+		var expiresAt sql.NullInt64
+		if err := rows3.Scan(&d.ID, &d.AgentID, &d.ChannelID, &d.Content, &threadID, &d.RoomVersion, &st, &d.CreatedAt, &d.UpdatedAt, &expiresAt); err != nil {
+			return nil, err
+		}
+		d.Status = proto.HeldDraftStatus(st)
+		d.ThreadID = threadID.String
+		d.ExpiresAt = expiresAt.Int64
+		out3 = append(out3, d)
+	}
+	return out3, rows3.Err()
+}
+
+func (s *SQLiteStore) UpdateDraftStatus(ctx context.Context, id string, status proto.HeldDraftStatus) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE held_drafts SET status = ?, updated_at = ? WHERE id = ?`, string(status), time.Now().UnixMilli(), id)
+	return err
+}
+
+func (s *SQLiteStore) DeleteDraft(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM held_drafts WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) GetChannelRoomVersion(ctx context.Context, channelID string) (int64, error) {
+	var version int64
+	err := s.db.QueryRowContext(ctx, `SELECT room_version FROM channels WHERE id = ?`, channelID).Scan(&version)
+	return version, err
+}
+
+func (s *SQLiteStore) ExpireDrafts(ctx context.Context) error {
+	now := time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx, `UPDATE held_drafts SET status = 'expired', updated_at = ? WHERE status = 'held' AND expires_at > 0 AND expires_at < ?`, now, now)
+	return err
+}
+
+// --- Agent Workspace ---
+
+func (s *SQLiteStore) CreateWorkspaceItem(ctx context.Context, item *proto.AgentWorkspaceItem) error {
+	if item.ID == "" {
+		item.ID = uuid.New().String()
+	}
+	now := time.Now().UnixMilli()
+	if item.CreatedAt == 0 {
+		item.CreatedAt = now
+	}
+	if item.UpdatedAt == 0 {
+		item.UpdatedAt = now
+	}
+	tagsJSON := "[]"
+	if len(item.Tags) > 0 {
+		b, _ := json.Marshal(item.Tags)
+		tagsJSON = string(b)
+	}
+	var fileID any
+	if item.FileID != "" {
+		fileID = item.FileID
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO agent_workspace (id, agent_id, workspace_id, name, description, content, mime_type, size, file_id, namespace, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.AgentID, item.WorkspaceID, item.Name, item.Description, item.Content, item.MimeType, item.Size, fileID, item.Namespace, tagsJSON, item.CreatedAt, item.UpdatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetWorkspaceItem(ctx context.Context, id string) (*proto.AgentWorkspaceItem, error) {
+	item := &proto.AgentWorkspaceItem{}
+	var fileID sql.NullString
+	var tags string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, agent_id, workspace_id, name, description, content, mime_type, size, file_id, namespace, tags, created_at, updated_at FROM agent_workspace WHERE id = ?`, id).
+		Scan(&item.ID, &item.AgentID, &item.WorkspaceID, &item.Name, &item.Description, &item.Content, &item.MimeType, &item.Size, &fileID, &item.Namespace, &tags, &item.CreatedAt, &item.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.FileID = fileID.String
+	_ = json.Unmarshal([]byte(tags), &item.Tags)
+	return item, nil
+}
+
+func (s *SQLiteStore) GetWorkspaceItemByName(ctx context.Context, agentID, namespace, name string) (*proto.AgentWorkspaceItem, error) {
+	item := &proto.AgentWorkspaceItem{}
+	var fileID sql.NullString
+	var tags string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, agent_id, workspace_id, name, description, content, mime_type, size, file_id, namespace, tags, created_at, updated_at FROM agent_workspace WHERE agent_id = ? AND namespace = ? AND name = ?`, agentID, namespace, name).
+		Scan(&item.ID, &item.AgentID, &item.WorkspaceID, &item.Name, &item.Description, &item.Content, &item.MimeType, &item.Size, &fileID, &item.Namespace, &tags, &item.CreatedAt, &item.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	item.FileID = fileID.String
+	_ = json.Unmarshal([]byte(tags), &item.Tags)
+	return item, nil
+}
+
+func (s *SQLiteStore) ListWorkspaceItems(ctx context.Context, agentID string, namespace string) ([]*proto.AgentWorkspaceItem, error) {
+	query := `SELECT id, agent_id, workspace_id, name, description, content, mime_type, size, file_id, namespace, tags, created_at, updated_at FROM agent_workspace WHERE agent_id = ?`
+	args := []any{agentID}
+	if namespace != "" {
+		query += ` AND namespace = ?`
+		args = append(args, namespace)
+	}
+	query += ` ORDER BY updated_at DESC LIMIT 100`
+	rows4, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows4.Close()
+	var out4 []*proto.AgentWorkspaceItem
+	for rows4.Next() {
+		item := &proto.AgentWorkspaceItem{}
+		var fileID sql.NullString
+		var tags string
+		if err := rows4.Scan(&item.ID, &item.AgentID, &item.WorkspaceID, &item.Name, &item.Description, &item.Content, &item.MimeType, &item.Size, &fileID, &item.Namespace, &tags, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		item.FileID = fileID.String
+		_ = json.Unmarshal([]byte(tags), &item.Tags)
+		out4 = append(out4, item)
+	}
+	return out4, rows4.Err()
+}
+
+func (s *SQLiteStore) UpdateWorkspaceItem(ctx context.Context, item *proto.AgentWorkspaceItem) error {
+	item.UpdatedAt = time.Now().UnixMilli()
+	tagsJSON := "[]"
+	if len(item.Tags) > 0 {
+		b, _ := json.Marshal(item.Tags)
+		tagsJSON = string(b)
+	}
+	var fileID any
+	if item.FileID != "" {
+		fileID = item.FileID
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE agent_workspace SET name=?, description=?, content=?, mime_type=?, size=?, file_id=?, tags=?, updated_at=? WHERE id=?`,
+		item.Name, item.Description, item.Content, item.MimeType, item.Size, fileID, tagsJSON, item.UpdatedAt, item.ID)
+	return err
+}
+
+func (s *SQLiteStore) DeleteWorkspaceItem(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM agent_workspace WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) SearchWorkspaceItems(ctx context.Context, agentID string, query string) ([]*proto.AgentWorkspaceItem, error) {
+	rows5, err := s.db.QueryContext(ctx,
+		`SELECT id, agent_id, workspace_id, name, description, content, mime_type, size, file_id, namespace, tags, created_at, updated_at FROM agent_workspace WHERE agent_id = ? AND (name LIKE ? OR description LIKE ? OR content LIKE ?) ORDER BY updated_at DESC LIMIT 50`,
+		agentID, "%"+query+"%", "%"+query+"%", "%"+query+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows5.Close()
+	var out5 []*proto.AgentWorkspaceItem
+	for rows5.Next() {
+		item := &proto.AgentWorkspaceItem{}
+		var fileID sql.NullString
+		var tags string
+		if err := rows5.Scan(&item.ID, &item.AgentID, &item.WorkspaceID, &item.Name, &item.Description, &item.Content, &item.MimeType, &item.Size, &fileID, &item.Namespace, &tags, &item.CreatedAt, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		item.FileID = fileID.String
+		_ = json.Unmarshal([]byte(tags), &item.Tags)
+		out5 = append(out5, item)
+	}
+	return out5, rows5.Err()
+}
+
+// --- Review Requests ---
+
+func (s *SQLiteStore) CreateReviewRequest(ctx context.Context, r *proto.ReviewRequest) error {
+	if r.ID == "" {
+		r.ID = uuid.New().String()
+	}
+	now := time.Now().UnixMilli()
+	if r.CreatedAt == 0 {
+		r.CreatedAt = now
+	}
+	if r.UpdatedAt == 0 {
+		r.UpdatedAt = now
+	}
+	var threadID any
+	if r.ThreadID != "" {
+		threadID = r.ThreadID
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO review_requests (id, workspace_id, channel_id, requester_id, reviewer_id, subject, content, thread_id, status, review_comment, created_at, updated_at, reviewed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.WorkspaceID, r.ChannelID, r.RequesterID, r.ReviewerID, r.Subject, r.Content, threadID, string(r.Status), r.ReviewComment, r.CreatedAt, r.UpdatedAt, r.ReviewedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetReviewRequest(ctx context.Context, id string) (*proto.ReviewRequest, error) {
+	r := &proto.ReviewRequest{}
+	var status string
+	var threadID, reviewComment sql.NullString
+	var reviewedAt sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, channel_id, requester_id, reviewer_id, subject, content, thread_id, status, review_comment, created_at, updated_at, reviewed_at FROM review_requests WHERE id = ?`, id).
+		Scan(&r.ID, &r.WorkspaceID, &r.ChannelID, &r.RequesterID, &r.ReviewerID, &r.Subject, &r.Content, &threadID, &status, &reviewComment, &r.CreatedAt, &r.UpdatedAt, &reviewedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.Status = proto.ReviewStatus(status)
+	r.ThreadID = threadID.String
+	r.ReviewComment = reviewComment.String
+	r.ReviewedAt = reviewedAt.Int64
+	return r, nil
+}
+
+func (s *SQLiteStore) ListReviewRequests(ctx context.Context, reviewerID string, status string) ([]*proto.ReviewRequest, error) {
+	query := `SELECT id, workspace_id, channel_id, requester_id, reviewer_id, subject, content, thread_id, status, review_comment, created_at, updated_at, reviewed_at FROM review_requests WHERE reviewer_id = ?`
+	args := []any{reviewerID}
+	if status != "" {
+		query += ` AND status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC LIMIT 50`
+	rows6, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows6.Close()
+	var out6 []*proto.ReviewRequest
+	for rows6.Next() {
+		r := &proto.ReviewRequest{}
+		var st string
+		var threadID, reviewComment sql.NullString
+		var reviewedAt sql.NullInt64
+		if err := rows6.Scan(&r.ID, &r.WorkspaceID, &r.ChannelID, &r.RequesterID, &r.ReviewerID, &r.Subject, &r.Content, &threadID, &st, &reviewComment, &r.CreatedAt, &r.UpdatedAt, &reviewedAt); err != nil {
+			return nil, err
+		}
+		r.Status = proto.ReviewStatus(st)
+		r.ThreadID = threadID.String
+		r.ReviewComment = reviewComment.String
+		r.ReviewedAt = reviewedAt.Int64
+		out6 = append(out6, r)
+	}
+	return out6, rows6.Err()
+}
+
+func (s *SQLiteStore) UpdateReviewRequest(ctx context.Context, r *proto.ReviewRequest) error {
+	r.UpdatedAt = time.Now().UnixMilli()
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE review_requests SET status=?, review_comment=?, updated_at=?, reviewed_at=? WHERE id=?`,
+		string(r.Status), r.ReviewComment, r.UpdatedAt, r.ReviewedAt, r.ID)
+	return err
+}
+
+// --- Team Templates ---
+
+func (s *SQLiteStore) CreateTeamTemplate(ctx context.Context, t *proto.TeamTemplate) error {
+	if t.ID == "" {
+		t.ID = uuid.New().String()
+	}
+	now := time.Now().UnixMilli()
+	if t.CreatedAt == 0 {
+		t.CreatedAt = now
+	}
+	if t.UpdatedAt == 0 {
+		t.UpdatedAt = now
+	}
+	isBuiltin := 0
+	if t.IsBuiltin {
+		isBuiltin = 1
+	}
+	var createdBy any
+	if t.CreatedBy != "" {
+		createdBy = t.CreatedBy
+	}
+	var wsID any
+	if t.WorkspaceID != "" {
+		wsID = t.WorkspaceID
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO team_templates (id, workspace_id, name, description, category, roles, channels, is_builtin, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, wsID, t.Name, t.Description, t.Category, string(t.Roles), string(t.Channels), isBuiltin, createdBy, t.CreatedAt, t.UpdatedAt)
+	return err
+}
+
+func (s *SQLiteStore) GetTeamTemplate(ctx context.Context, id string) (*proto.TeamTemplate, error) {
+	t := &proto.TeamTemplate{}
+	var isBuiltin int
+	var createdBy, wsID sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, workspace_id, name, description, category, roles, channels, is_builtin, created_by, created_at, updated_at FROM team_templates WHERE id = ?`, id).
+		Scan(&t.ID, &wsID, &t.Name, &t.Description, &t.Category, &t.Roles, &t.Channels, &isBuiltin, &createdBy, &t.CreatedAt, &t.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t.IsBuiltin = isBuiltin != 0
+	t.CreatedBy = createdBy.String
+	t.WorkspaceID = wsID.String
+	return t, nil
+}
+
+func (s *SQLiteStore) ListTeamTemplates(ctx context.Context, workspaceID string) ([]*proto.TeamTemplate, error) {
+	query := `SELECT id, workspace_id, name, description, category, roles, channels, is_builtin, created_by, created_at, updated_at FROM team_templates WHERE is_builtin = 1`
+	var args []any
+	if workspaceID != "" {
+		query += ` OR workspace_id = ?`
+		args = append(args, workspaceID)
+	}
+	query += ` ORDER BY name LIMIT 50`
+	rows7, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows7.Close()
+	var out7 []*proto.TeamTemplate
+	for rows7.Next() {
+		t := &proto.TeamTemplate{}
+		var isBuiltin int
+		var createdBy, wsID sql.NullString
+		if err := rows7.Scan(&t.ID, &wsID, &t.Name, &t.Description, &t.Category, &t.Roles, &t.Channels, &isBuiltin, &createdBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		t.IsBuiltin = isBuiltin != 0
+		t.CreatedBy = createdBy.String
+		t.WorkspaceID = wsID.String
+		out7 = append(out7, t)
+	}
+	return out7, rows7.Err()
+}
+
+func (s *SQLiteStore) DeleteTeamTemplate(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM team_templates WHERE id = ? AND is_builtin = 0`, id)
+	return err
 }
